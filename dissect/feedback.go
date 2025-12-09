@@ -15,6 +15,7 @@ type MatchUpdateType int
 const (
 	Kill MatchUpdateType = iota
 	Death
+	DBNO // Down But Not Out - player was downed
 	DefuserPlantStart
 	DefuserPlantComplete
 	DefuserDisableStart
@@ -57,6 +58,13 @@ func (i *MatchUpdateType) UnmarshalJSON(data []byte) (err error) {
 var activity2 = []byte{0x00, 0x00, 0x00, 0x22, 0xe3, 0x09, 0x00, 0x79}
 var killIndicator = []byte{0x22, 0xd9, 0x13, 0x3c, 0xba}
 
+// Kill type byte values (found at typeBytes[6] after the 5-byte kill indicator)
+const (
+	killTypeDeath = 0x00 // No attacker (e.g., suicide, fall damage)
+	killTypeDBNO  = 0x01 // Down But Not Out
+	killTypeKill  = 0x02 // Confirmed kill/elimination
+)
+
 func readMatchFeedback(r *Reader) error {
 	if r.Header.CodeVersion >= Y9S1Update3 {
 		if err := r.Skip(38); err != nil {
@@ -88,7 +96,7 @@ func readMatchFeedback(r *Reader) error {
 	if err != nil {
 		return err
 	}
-	if size == 0 { // kill or an unknown indicator at start of match
+	if size == 0 { // kill, DBNO, or an unknown indicator at start of match
 		killTrace, err := r.Bytes(5)
 		if err != nil {
 			return err
@@ -103,16 +111,23 @@ func readMatchFeedback(r *Reader) error {
 		}
 		empty := len(username) == 0
 		if empty {
-			log.Debug().Str("warn", "kill username empty").Send()
+			log.Debug().Str("warn", "kill/DBNO username empty").Send()
 		}
-		// No idea what these 15 bytes mean (kill type?)
-		if err = r.Skip(15); err != nil {
+		// These 15 bytes contain kill type info - byte[6] distinguishes DBNO vs Kill
+		typeBytes, err := r.Bytes(15)
+		if err != nil {
 			return err
 		}
+		killType := typeBytes[6]
+		log.Debug().Hex("killTypeBytes", typeBytes).Uint8("killType", killType).Str("username", username).Msg("kill_type_data")
+
 		target, err := r.String()
 		if err != nil {
 			return err
 		}
+		log.Debug().Str("target", target).Uint8("killType", killType).Msg("kill/dbno target parsed")
+
+		// Handle death with no attacker (suicide, fall damage, etc.)
 		if empty && len(target) > 0 {
 			u := MatchUpdate{
 				Type:          Death,
@@ -127,9 +142,34 @@ func readMatchFeedback(r *Reader) error {
 		} else if empty {
 			return nil
 		}
+
+		// Handle DBNO event (killType = 0x01)
+		if killType == killTypeDBNO {
+			u := MatchUpdate{
+				Type:          DBNO,
+				Username:      username,
+				Target:        target,
+				Time:          r.timeRaw,
+				TimeInSeconds: r.time,
+			}
+			// Track who downed the target
+			r.dbnoState[target] = username
+			r.MatchFeedback = append(r.MatchFeedback, u)
+			log.Debug().Interface("match_update", u).Str("dbno_tracker", "recorded").Send()
+			return nil
+		}
+
+		// Handle Kill event (killType = 0x02) - check if victim was DBNO'd and credit original downer
+		killCredit := username
+		if downer, wasDowned := r.dbnoState[target]; wasDowned {
+			killCredit = downer
+			log.Debug().Str("original_killer", username).Str("credited_to", downer).Str("victim", target).Msg("kill credit redirected to downer")
+			delete(r.dbnoState, target) // Clear DBNO state for this player
+		}
+
 		u := MatchUpdate{
 			Type:          Kill,
-			Username:      username,
+			Username:      killCredit,
 			Target:        target,
 			Time:          r.timeRaw,
 			TimeInSeconds: r.time,
@@ -149,11 +189,12 @@ func readMatchFeedback(r *Reader) error {
 		// Ignore duplicates
 		for _, val := range r.MatchFeedback {
 			if val.Type == Kill && val.Username == u.Username && val.Target == u.Target {
+				log.Debug().Str("username", u.Username).Str("target", u.Target).Msg("duplicate kill filtered")
 				return nil
 			}
 		}
 		// removing the elimination username for now
-		if r.lastKillerFromScoreboard != username {
+		if r.lastKillerFromScoreboard != killCredit {
 			u.usernameFromScoreboard = r.lastKillerFromScoreboard
 		}
 		r.MatchFeedback = append(r.MatchFeedback, u)

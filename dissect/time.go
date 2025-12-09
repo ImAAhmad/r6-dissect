@@ -47,6 +47,8 @@ func (r *Reader) roundEnd() {
 	log.Debug().Msg("round_end")
 
 	planter := -1
+	disabler := -1
+	hasDisableComplete := false
 	deaths := make(map[int]int)
 	sizes := make(map[int]int)
 	roles := make(map[int]TeamRole)
@@ -79,10 +81,45 @@ func (r *Reader) roundEnd() {
 		case DefuserPlantComplete:
 			planter = r.PlayerIndexByUsername(u.Username)
 			break
+		case DefuserDisableStart:
+			disabler = r.PlayerIndexByUsername(u.Username)
+			break
 		case DefuserDisableComplete:
-			i := r.Header.Players[r.PlayerIndexByUsername(u.Username)].TeamIndex
+			hasDisableComplete = true
+			playerIdx := r.PlayerIndexByUsername(u.Username)
+			if playerIdx < 0 || playerIdx >= len(r.Header.Players) {
+				log.Debug().Msg("warn: defuser disable player not found")
+				return
+			}
+			i := r.Header.Players[playerIdx].TeamIndex
 			r.Header.Teams[i].Won = true
 			r.Header.Teams[i].WinCondition = DisabledDefuser
+			return
+		}
+	}
+
+	if r.Header.CodeVersion >= Y9S4 && planter > -1 && !hasDisableComplete {
+		defenseTeamIndex := -1
+		for i, team := range r.Header.Teams {
+			if team.Role == Defense {
+				defenseTeamIndex = i
+				break
+			}
+		}
+		if defenseTeamIndex >= 0 && r.Header.Teams[defenseTeamIndex].Won {
+			username := ""
+			if disabler >= 0 && disabler < len(r.Header.Players) {
+				username = r.Header.Players[disabler].Username
+			}
+			u := MatchUpdate{
+				Type:          DefuserDisableComplete,
+				Username:      username,
+				Time:          r.timeRaw,
+				TimeInSeconds: r.time,
+			}
+			r.MatchFeedback = append(r.MatchFeedback, u)
+			log.Debug().Interface("match_update", u).Msg("inferred DefuserDisableComplete")
+			r.Header.Teams[defenseTeamIndex].WinCondition = DisabledDefuser
 			return
 		}
 	}

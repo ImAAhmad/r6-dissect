@@ -29,8 +29,9 @@ type Reader struct {
 	readPartial              bool // reads up to the player info packets
 	playersRead              int
 	lastKillerFromScoreboard string
-	Header                   Header        `json:"header"`
-	MatchFeedback            []MatchUpdate `json:"matchFeedback"`
+	dbnoState                map[string]string // maps victim username -> downer username (who knocked them)
+	Header                   Header            `json:"header"`
+	MatchFeedback            []MatchUpdate     `json:"matchFeedback"`
 	Scoreboard               Scoreboard
 }
 
@@ -44,7 +45,9 @@ func NewReader(in io.Reader) (r *Reader, err error) {
 	}
 	log.Debug().Bool("chunkedCompression (>=Y8S4)", chunkedCompression).Send()
 	r = &Reader{
-		readPartial: false,
+		readPartial:            false,
+		lastDefuserPlayerIndex: -1,
+		dbnoState:              make(map[string]string),
 	}
 	if chunkedCompression {
 		if err = r.readChunkedData(br); err != nil {
@@ -302,6 +305,15 @@ func (r *Reader) Bytes(n int) ([]byte, error) {
 	return r.b[r.offset-n : r.offset], nil
 }
 
+// PeekBack returns up to n bytes before the current offset without changing position
+func (r *Reader) PeekBack(n int) []byte {
+	start := r.offset - n
+	if start < 0 {
+		start = 0
+	}
+	return r.b[start:r.offset]
+}
+
 func (r *Reader) Int() (int, error) {
 	b, err := r.Bytes(1)
 	if err != nil {
@@ -346,4 +358,15 @@ func (r *Reader) Uint64() (uint64, error) {
 
 func (r *Reader) Write(w io.Writer) (n int, err error) {
 	return w.Write(r.b)
+}
+
+// ClearDBNOState removes a player from the DBNO tracking (e.g., when they are revived or killed)
+func (r *Reader) ClearDBNOState(username string) {
+	delete(r.dbnoState, username)
+}
+
+// GetDowner returns who downed a player, if they are in DBNO state
+func (r *Reader) GetDowner(victim string) (string, bool) {
+	downer, ok := r.dbnoState[victim]
+	return downer, ok
 }

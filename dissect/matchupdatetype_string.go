@@ -10,20 +10,21 @@ func _() {
 	var x [1]struct{}
 	_ = x[Kill-0]
 	_ = x[Death-1]
-	_ = x[DefuserPlantStart-2]
-	_ = x[DefuserPlantComplete-3]
-	_ = x[DefuserDisableStart-4]
-	_ = x[DefuserDisableComplete-5]
-	_ = x[LocateObjective-6]
-	_ = x[OperatorSwap-7]
-	_ = x[Battleye-8]
-	_ = x[PlayerLeave-9]
-	_ = x[Other-10]
+	_ = x[DBNO-2]
+	_ = x[DefuserPlantStart-3]
+	_ = x[DefuserPlantComplete-4]
+	_ = x[DefuserDisableStart-5]
+	_ = x[DefuserDisableComplete-6]
+	_ = x[LocateObjective-7]
+	_ = x[OperatorSwap-8]
+	_ = x[Battleye-9]
+	_ = x[PlayerLeave-10]
+	_ = x[Other-11]
 }
 
-const _MatchUpdateType_name = "KillDeathDefuserPlantStartDefuserPlantCompleteDefuserDisableStartDefuserDisableCompleteLocateObjectiveOperatorSwapBattleyePlayerLeaveOther"
+const _MatchUpdateType_name = "KillDeathDBNODefuserPlantStartDefuserPlantCompleteDefuserDisableStartDefuserDisableCompleteLocateObjectiveOperatorSwapBattleyePlayerLeaveOther"
 
-var _MatchUpdateType_index = [...]uint8{0, 4, 9, 26, 46, 65, 87, 102, 114, 122, 133, 138}
+var _MatchUpdateType_index = [...]uint8{0, 4, 9, 13, 30, 50, 69, 91, 106, 118, 126, 137, 142}
 
 func (i MatchUpdateType) String() string {
 	if i < 0 || i >= MatchUpdateType(len(_MatchUpdateType_index)-1) {
