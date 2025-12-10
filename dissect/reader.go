@@ -29,8 +29,7 @@ type Reader struct {
 	readPartial              bool // reads up to the player info packets
 	playersRead              int
 	lastKillerFromScoreboard string
-	dbnoState                map[string]string // maps victim username -> downer username (who knocked them)
-	Header                   Header            `json:"header"`
+	Header                   Header `json:"header"`
 	MatchFeedback            []MatchUpdate     `json:"matchFeedback"`
 	Scoreboard               Scoreboard
 }
@@ -47,7 +46,6 @@ func NewReader(in io.Reader) (r *Reader, err error) {
 	r = &Reader{
 		readPartial:            false,
 		lastDefuserPlayerIndex: -1,
-		dbnoState:              make(map[string]string),
 	}
 	if chunkedCompression {
 		if err = r.readChunkedData(br); err != nil {
@@ -360,13 +358,4 @@ func (r *Reader) Write(w io.Writer) (n int, err error) {
 	return w.Write(r.b)
 }
 
-// ClearDBNOState removes a player from the DBNO tracking (e.g., when they are revived or killed)
-func (r *Reader) ClearDBNOState(username string) {
-	delete(r.dbnoState, username)
-}
 
-// GetDowner returns who downed a player, if they are in DBNO state
-func (r *Reader) GetDowner(victim string) (string, bool) {
-	downer, ok := r.dbnoState[victim]
-	return downer, ok
-}

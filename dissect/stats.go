@@ -102,7 +102,7 @@ func (r *Reader) PlayerStats() []PlayerRoundStats {
 		i := index[a.Username]
 		if a.Type == Kill {
 			stats[i].Kills += 1
-			if *a.Headshot {
+			if a.Headshot != nil && *a.Headshot {
 				stats[i].Headshots += 1
 			}
 			stats[i].HeadshotPercentage = headshotPercentage(stats[i].Headshots, stats[i].Kills)

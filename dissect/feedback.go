@@ -15,7 +15,6 @@ type MatchUpdateType int
 const (
 	Kill MatchUpdateType = iota
 	Death
-	DBNO // Down But Not Out - player was downed
 	DefuserPlantStart
 	DefuserPlantComplete
 	DefuserDisableStart
@@ -58,13 +57,6 @@ func (i *MatchUpdateType) UnmarshalJSON(data []byte) (err error) {
 var activity2 = []byte{0x00, 0x00, 0x00, 0x22, 0xe3, 0x09, 0x00, 0x79}
 var killIndicator = []byte{0x22, 0xd9, 0x13, 0x3c, 0xba}
 
-// Kill type byte values (found at typeBytes[6] after the 5-byte kill indicator)
-const (
-	killTypeDeath = 0x00 // No attacker (e.g., suicide, fall damage)
-	killTypeDBNO  = 0x01 // Down But Not Out
-	killTypeKill  = 0x02 // Confirmed kill/elimination
-)
-
 func readMatchFeedback(r *Reader) error {
 	if r.Header.CodeVersion >= Y9S1Update3 {
 		if err := r.Skip(38); err != nil {
@@ -96,7 +88,7 @@ func readMatchFeedback(r *Reader) error {
 	if err != nil {
 		return err
 	}
-	if size == 0 { // kill, DBNO, or an unknown indicator at start of match
+	if size == 0 { // kill or an unknown indicator at start of match
 		killTrace, err := r.Bytes(5)
 		if err != nil {
 			return err
@@ -111,65 +103,33 @@ func readMatchFeedback(r *Reader) error {
 		}
 		empty := len(username) == 0
 		if empty {
-			log.Debug().Str("warn", "kill/DBNO username empty").Send()
+			log.Debug().Str("warn", "kill username empty").Send()
 		}
-		// These 15 bytes contain kill type info - byte[6] distinguishes DBNO vs Kill
-		typeBytes, err := r.Bytes(15)
-		if err != nil {
+		if err = r.Skip(15); err != nil {
 			return err
 		}
-		killType := typeBytes[6]
-		log.Debug().Hex("killTypeBytes", typeBytes).Uint8("killType", killType).Str("username", username).Msg("kill_type_data")
-
 		target, err := r.String()
 		if err != nil {
 			return err
 		}
-		log.Debug().Str("target", target).Uint8("killType", killType).Msg("kill/dbno target parsed")
-
-		// Handle death with no attacker (suicide, fall damage, etc.)
-		if empty && len(target) > 0 {
-			u := MatchUpdate{
-				Type:          Death,
-				Username:      target,
-				Time:          r.timeRaw,
-				TimeInSeconds: r.time,
+		log.Debug().Str("target", target).Msg("kill target parsed")
+		if empty {
+			if len(target) > 0 {
+				u := MatchUpdate{
+					Type:          Death,
+					Username:      target,
+					Time:          r.timeRaw,
+					TimeInSeconds: r.time,
+				}
+				r.MatchFeedback = append(r.MatchFeedback, u)
+				log.Debug().Interface("match_update", u).Send()
+				log.Debug().Msg("kill username empty because of death")
 			}
-			r.MatchFeedback = append(r.MatchFeedback, u)
-			log.Debug().Interface("match_update", u).Send()
-			log.Debug().Msg("kill username empty because of death")
-			return nil
-		} else if empty {
 			return nil
 		}
-
-		// Handle DBNO event (killType = 0x01)
-		if killType == killTypeDBNO {
-			u := MatchUpdate{
-				Type:          DBNO,
-				Username:      username,
-				Target:        target,
-				Time:          r.timeRaw,
-				TimeInSeconds: r.time,
-			}
-			// Track who downed the target
-			r.dbnoState[target] = username
-			r.MatchFeedback = append(r.MatchFeedback, u)
-			log.Debug().Interface("match_update", u).Str("dbno_tracker", "recorded").Send()
-			return nil
-		}
-
-		// Handle Kill event (killType = 0x02) - check if victim was DBNO'd and credit original downer
-		killCredit := username
-		if downer, wasDowned := r.dbnoState[target]; wasDowned {
-			killCredit = downer
-			log.Debug().Str("original_killer", username).Str("credited_to", downer).Str("victim", target).Msg("kill credit redirected to downer")
-			delete(r.dbnoState, target) // Clear DBNO state for this player
-		}
-
 		u := MatchUpdate{
 			Type:          Kill,
-			Username:      killCredit,
+			Username:      username,
 			Target:        target,
 			Time:          r.timeRaw,
 			TimeInSeconds: r.time,
@@ -186,15 +146,92 @@ func readMatchFeedback(r *Reader) error {
 			*headshotPtr = true
 		}
 		u.Headshot = headshotPtr
-		// Ignore duplicates
-		for _, val := range r.MatchFeedback {
-			if val.Type == Kill && val.Username == u.Username && val.Target == u.Target {
-				log.Debug().Str("username", u.Username).Str("target", u.Target).Msg("duplicate kill filtered")
+		// Validate teams: killer and target must be on different teams
+		killerIdx := r.PlayerIndexByUsername(u.Username)
+		targetIdx := r.PlayerIndexByUsername(u.Target)
+		if killerIdx >= 0 && targetIdx >= 0 {
+			killerTeam := r.Header.Players[killerIdx].TeamIndex
+			targetTeam := r.Header.Players[targetIdx].TeamIndex
+			if killerTeam == targetTeam {
+				log.Debug().
+					Str("killer", u.Username).
+					Str("target", u.Target).
+					Int("team", killerTeam).
+					Msg("kill filtered (same team)")
+				return nil
+			}
+		}
+		// Filter duplicate kills: if the target has already been killed in this round,
+		// it's a duplicate (replays sometimes emit the same kill event multiple times,
+		// especially after defuser plant when the timer resets).
+		// Exception: overtime after defuser allows ONE "re-kill" per target (DBNO revive scenario).
+		// We detect overtime by checking if time jumps up (timer reset after defuser plant).
+		// 
+		// Special case: kills that occur exactly at defuser plant time are "plant-boundary kills"
+		// and are more likely to be duplicated by the replay system. For these, we require
+		// the re-kill to be by a DIFFERENT killer to count as legitimate.
+		inOvertime := false
+		defuserPlantTime := float64(-1)
+		for i := len(r.MatchFeedback) - 1; i >= 0; i-- {
+			val := r.MatchFeedback[i]
+			// Track defuser plant time
+			if val.Type == DefuserPlantComplete {
+				defuserPlantTime = val.TimeInSeconds
+			}
+			// Detect if we're in overtime: time has jumped up (timer reset after defuser)
+			// Check ALL events for time jumps, not just kills
+			if u.TimeInSeconds > val.TimeInSeconds+5 {
+				inOvertime = true
+			}
+			// Only check kills/deaths for duplicate detection
+			if val.Type != Kill && val.Type != Death {
+				continue
+			}
+			// Check if this target has already been killed/died in this round
+			targetAlreadyDead := (val.Type == Kill && val.Target == u.Target) ||
+				(val.Type == Death && val.Username == u.Target)
+			if targetAlreadyDead {
+				sameKiller := val.Type == Kill && val.Username == u.Username
+				// Check if original kill was at plant-boundary (at or within 1 second AFTER defuser plant)
+				// Note: time counts DOWN, so val.TimeInSeconds <= defuserPlantTime means kill was at/after plant
+				isPlantBoundaryKill := defuserPlantTime >= 0 && val.TimeInSeconds <= defuserPlantTime && val.TimeInSeconds >= defuserPlantTime-1
+				// In overtime, allow re-kills with these conditions:
+				// - If same killer: only allow if NOT a plant-boundary kill (those are likely duplicates)
+				// - If different killer: always allow (DBNO finished by teammate, now actually killed)
+				if inOvertime {
+					if !sameKiller {
+						log.Debug().
+							Str("killer", u.Username).
+							Str("target", u.Target).
+							Str("original_killer", val.Username).
+							Float64("existing_time", val.TimeInSeconds).
+							Float64("new_time", u.TimeInSeconds).
+							Msg("overtime re-kill allowed (different killer)")
+						break
+					}
+					if !isPlantBoundaryKill {
+						log.Debug().
+							Str("killer", u.Username).
+							Str("target", u.Target).
+							Float64("existing_time", val.TimeInSeconds).
+							Float64("new_time", u.TimeInSeconds).
+							Float64("defuser_plant_time", defuserPlantTime).
+							Msg("overtime re-kill allowed (same killer, not plant-boundary)")
+						break
+					}
+				}
+				log.Debug().
+					Str("killer", u.Username).
+					Str("target", u.Target).
+					Float64("existing_time", val.TimeInSeconds).
+					Float64("new_time", u.TimeInSeconds).
+					Bool("plant_boundary", isPlantBoundaryKill).
+					Msg("duplicate kill filtered (target already dead)")
 				return nil
 			}
 		}
 		// removing the elimination username for now
-		if r.lastKillerFromScoreboard != killCredit {
+		if r.lastKillerFromScoreboard != username {
 			u.usernameFromScoreboard = r.lastKillerFromScoreboard
 		}
 		r.MatchFeedback = append(r.MatchFeedback, u)
