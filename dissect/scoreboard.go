@@ -2,6 +2,7 @@ package dissect
 
 import (
 	"encoding/hex"
+	"sort"
 
 	"github.com/rs/zerolog/log"
 )
@@ -382,6 +383,10 @@ func (r *Reader) reconcileKillsFromScoreboard() {
 	if len(overCredited) == 0 || len(underCredited) == 0 {
 		return
 	}
+	// Map iteration order is random: without a fixed order, a kill could move to a different
+	// player on each parse of the same file.
+	sort.Slice(overCredited, func(i, j int) bool { return overCredited[i].idx < overCredited[j].idx })
+	sort.Slice(underCredited, func(i, j int) bool { return underCredited[i].idx < underCredited[j].idx })
 
 	for ui := range underCredited {
 		underIdx := underCredited[ui].idx
