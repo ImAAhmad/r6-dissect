@@ -1,0 +1,79 @@
+diff --git a/dissect/player.go b/dissect/player.go
+index 402c0c8..ac9121f 100644
+--- a/dissect/player.go
++++ b/dissect/player.go
+@@ -184,6 +184,7 @@ func readPlayer(r *Reader) error {
+ 			break
+ 		}
+ 	}
++	probeReads = append(probeReads, probeRead{r.playersRead, username, found, len(r.Scoreboard.Players) > 0, op})
+ 	if !found && len(username) > 0 {
+ 		r.Header.Players = append(r.Header.Players, p)
+ 		foundIndex = len(r.Header.Players) - 1
+@@ -277,3 +278,13 @@ func (r *Reader) opSwapPlayerObject(offset int) uint64 {
+ 	}
+ 	return readHandle(b[1 : 1+handleSize])
+ }
++
++type probeRead struct {
++	n          int
++	username   string
++	found      bool
++	afterDerive bool
++	op         uint64
++}
++
++var probeReads []probeRead
+diff --git a/dissect/scoreboard.go b/dissect/scoreboard.go
+index f3a20e6..4853796 100644
+--- a/dissect/scoreboard.go
++++ b/dissect/scoreboard.go
+@@ -164,6 +164,8 @@ func readScoreboardAssists(r *Reader) error {
+ 		if idx < len(r.Scoreboard.Players) {
+ 			r.Scoreboard.Players[idx].Assists = assists
+ 			r.Scoreboard.Players[idx].AssistsFromRound++
++		} else {
++			probeDropped = append(probeDropped, probeDrop{r, idx, "assist", assists})
+ 		}
+ 	}
+ 	log.Debug().
+@@ -190,6 +192,8 @@ func readScoreboardAssistsY10S4(r *Reader, assists uint32) error {
+ 		if idx < len(r.Scoreboard.Players) {
+ 			r.Scoreboard.Players[idx].Assists = assists
+ 			r.Scoreboard.Players[idx].AssistsFromRound++
++		} else {
++			probeDropped = append(probeDropped, probeDrop{r, idx, "assist", assists})
+ 		}
+ 	}
+ 	log.Debug().
+@@ -225,6 +229,8 @@ func readScoreboardScore(r *Reader) error {
+ 		username = r.Header.Players[idx].Username
+ 		if idx < len(r.Scoreboard.Players) {
+ 			r.Scoreboard.Players[idx].Score = score
++		} else {
++			probeDropped = append(probeDropped, probeDrop{r, idx, "score", score})
+ 		}
+ 	}
+ 	log.Debug().
+@@ -250,6 +256,8 @@ func readScoreboardScoreY10S4(r *Reader, score uint32) error {
+ 		username = r.Header.Players[idx].Username
+ 		if idx < len(r.Scoreboard.Players) {
+ 			r.Scoreboard.Players[idx].Score = score
++		} else {
++			probeDropped = append(probeDropped, probeDrop{r, idx, "score", score})
+ 		}
+ 
+ 		// +100 score bonus identifies defuser planter/disabler
+@@ -386,3 +394,12 @@ func (r *Reader) reconcileKillsFromScoreboard() {
+ 		}
+ 	}
+ }
++
++type probeDrop struct {
++	r    *Reader
++	idx  int
++	kind string
++	v    uint32
++}
++
++var probeDropped []probeDrop

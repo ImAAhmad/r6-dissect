@@ -1,0 +1,218 @@
+package dissect
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+)
+
+const failureFixture = "test/data/replays/valid/Y11S2/custom_early_plant.rec"
+
+var (
+	clockPattern  = []byte{0x1F, 0x07, 0xEF, 0xC9}       // readTime, Y8S1+
+	playerPattern = []byte{0x22, 0x07, 0x94, 0x9B, 0xDC} // readPlayer
+	// absentPattern occurs in no fixture, so a Seek for it runs to EOF.
+	absentPattern = []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x03, 0x03, 0x03, 0x03, 0xFE, 0xED}
+)
+
+// seekAbsent is a listener whose Seek always runs to EOF, like a listener whose marker moved.
+func seekAbsent(r *Reader) error { return r.Seek(absentPattern) }
+
+func openFixture(t *testing.T, path string) *Reader {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	r, err := NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(r.b, absentPattern) {
+		t.Fatalf("%s contains absentPattern; pick another", path)
+	}
+	return r
+}
+
+// One listener hits EOF halfway through the round. Everything the other listeners read,
+// before and after that point, and the end-of-round work, must be the same as a clean read.
+func TestRead_ListenerEOFDoesNotStopRound(t *testing.T) {
+	clean := openFixture(t, failureFixture)
+	ticks := 0
+	clean.Listen(clockPattern, func(*Reader) error { ticks++; return nil })
+	if err := clean.Read(); err != nil {
+		t.Fatalf("clean Read: %v", err)
+	}
+
+	faulted := openFixture(t, failureFixture)
+	calls := 0
+	faulted.Listen(clockPattern, func(r *Reader) error {
+		calls++
+		if calls == ticks/2 {
+			return r.Seek(absentPattern)
+		}
+		return nil
+	})
+	err := faulted.Read()
+	if err != nil {
+		t.Fatalf("Read returned %v; a listener failure must not fail the round", err)
+	}
+	if !reflect.DeepEqual(faulted.MatchFeedback, clean.MatchFeedback) {
+		t.Fatalf("matchFeedback differs: got %d events, want %d", len(faulted.MatchFeedback), len(clean.MatchFeedback))
+	}
+	if !reflect.DeepEqual(faulted.Header, clean.Header) {
+		t.Fatalf("header differs (teams won: got %v/%v, want %v/%v)",
+			faulted.Header.Teams[0].Won, faulted.Header.Teams[1].Won, clean.Header.Teams[0].Won, clean.Header.Teams[1].Won)
+	}
+	if !reflect.DeepEqual(faulted.Scoreboard, clean.Scoreboard) {
+		t.Fatal("scoreboard differs")
+	}
+	if faulted.b != nil {
+		t.Fatal("Read did not finish: the buffer was not released")
+	}
+	if len(faulted.Warnings) != 1 || faulted.Warnings[0].Count != 1 || faulted.Warnings[0].Error != io.EOF.Error() {
+		t.Fatalf("want one EOF warning with count 1, got %+v", faulted.Warnings)
+	}
+}
+
+// Failures of one listener are merged into one warning that names it.
+func TestRead_ListenerFailuresAreRecorded(t *testing.T) {
+	r := openFixture(t, failureFixture)
+	var starts []int
+	for i := 0; ; {
+		j := bytes.Index(r.b[i:], playerPattern)
+		if j < 0 {
+			break
+		}
+		starts = append(starts, i+j)
+		i += j + 1
+	}
+	r.Listen(playerPattern, seekAbsent)
+	if err := r.Read(); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	want := []ReadWarning{{
+		Listener:    "seekAbsent",
+		Pattern:     "22 07 94 9B DC",
+		Error:       "EOF",
+		Count:       len(starts),
+		FirstOffset: starts[0],
+	}}
+	if !reflect.DeepEqual(r.Warnings, want) {
+		t.Fatalf("warnings:\n got %+v\nwant %+v", r.Warnings, want)
+	}
+	if len(r.Header.Players) != 10 {
+		t.Fatalf("readPlayer shares the pattern and must still run: got %d players", len(r.Header.Players))
+	}
+}
+
+// A listener error that is not EOF is a per-packet failure too.
+func TestRead_ListenerHardErrorDoesNotStopRound(t *testing.T) {
+	clean := openFixture(t, failureFixture)
+	if err := clean.Read(); err != nil {
+		t.Fatal(err)
+	}
+	r := openFixture(t, failureFixture)
+	boom := errors.New("boom")
+	r.Listen(playerPattern, func(*Reader) error { return boom })
+	if err := r.Read(); err != nil {
+		t.Fatalf("Read returned %v; want nil", err)
+	}
+	if len(r.MatchFeedback) != len(clean.MatchFeedback) {
+		t.Fatalf("got %d events, want %d", len(r.MatchFeedback), len(clean.MatchFeedback))
+	}
+	if len(r.Warnings) != 1 || r.Warnings[0].Error != "boom" {
+		t.Fatalf("want one \"boom\" warning, got %+v", r.Warnings)
+	}
+}
+
+// A clean read records no warnings.
+func TestRead_CleanRoundHasNoWarnings(t *testing.T) {
+	r := openFixture(t, failureFixture)
+	if err := r.Read(); err != nil {
+		t.Fatal(err)
+	}
+	if r.Warnings != nil {
+		t.Fatalf("want no warnings, got %+v", r.Warnings)
+	}
+}
+
+func copyFixtures(t *testing.T, names ...string) *os.File {
+	t.Helper()
+	dir := t.TempDir()
+	for i, n := range names {
+		b, err := os.ReadFile(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// R01.rec, R02.rec, ... so the folder reads in this order
+		if err := os.WriteFile(filepath.Join(dir, "R0"+string(rune('1'+i))+".rec"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+// A listener failure in round 1 must not leave round 2 unread (nil), and the match JSON
+// carries the warnings on the round they happened in.
+func TestMatchReader_ListenerFailureReadsEveryRound(t *testing.T) {
+	m, err := NewMatchReader(copyFixtures(t, failureFixture, "test/data/replays/valid/Y11S2/custom_solid_snake.rec"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Listen(playerPattern, seekAbsent)
+	if err := m.Read(); err != nil {
+		t.Fatalf("MatchReader.Read: %v", err)
+	}
+	for i := 0; i < m.NumRounds(); i++ {
+		if m.rounds[i] == nil {
+			t.Fatalf("round %d was not read", i+1)
+		}
+	}
+	var buf bytes.Buffer
+	if err := m.WriteJSON(&buf); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Rounds []struct {
+			Warnings []ReadWarning `json:"warnings"`
+		} `json:"rounds"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	for i, rd := range out.Rounds {
+		if len(rd.Warnings) != 1 || rd.Warnings[0].Listener != "seekAbsent" {
+			t.Fatalf("round %d warnings: got %+v", i+1, rd.Warnings)
+		}
+	}
+}
+
+// The match JSON has no "warnings" key on a round that had none.
+func TestMatchReader_CleanRoundOmitsWarnings(t *testing.T) {
+	m, err := NewMatchReader(copyFixtures(t, failureFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Read(); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := m.WriteJSON(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(buf.Bytes(), []byte(`"warnings"`)) {
+		t.Fatal(`clean match JSON contains "warnings"`)
+	}
+}

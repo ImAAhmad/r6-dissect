@@ -2,6 +2,7 @@ package test
 
 import (
 	"encoding/json"
+	"flag"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +13,24 @@ import (
 	"github.com/go-test/deep"
 	"github.com/redraskal/r6-dissect/dissect"
 )
+
+// run `go test ./dissect/test -run TestReader_Read -update` to regenerate the expected JSON files
+var update = flag.Bool("update", false, "update the expected JSON files of valid replays")
+
+// writeRoundExpected writes the expected JSON file for roundFile
+func writeRoundExpected(roundFile string, r *dissect.Reader, t *testing.T) {
+	t.Helper()
+	b, err := json.MarshalIndent(struct {
+		Header        dissect.Header        `json:"header"`
+		MatchFeedback []dissect.MatchUpdate `json:"matchFeedback"`
+	}{r.Header, r.MatchFeedback}, "", "\t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(roundFile+".json", append(b, '\n'), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // withFile provides a wrapper for reading and closing a file
 func withFile(file string, run func(*os.File, *testing.T)) func(*testing.T) {
@@ -190,10 +209,23 @@ func TestReader_Read(t *testing.T) {
 				if err = gotR.Read(); !dissect.Ok(err) {
 					t.Fatalf("Read(): expected no error, got %v", err)
 				}
+				// the goldens hold no warnings, so a listener failure would not show in them
+				if gotR.Warnings != nil {
+					t.Errorf("Read(): a listener failed on this fixture: %+v", gotR.Warnings)
+				}
+				if *update {
+					writeRoundExpected(path, gotR, t)
+				}
 				wantJSON := readRoundExpected(path, t)
 
 				if diffs := deep.Equal(gotR.Header, wantJSON.Header); diffs != nil {
 					t.Errorf("Reader fields mismatch (got, want):")
+					for _, diff := range diffs {
+						t.Error("   " + diff)
+					}
+				}
+				if diffs := deep.Equal(gotR.MatchFeedback, wantJSON.MatchFeedback); diffs != nil {
+					t.Errorf("MatchFeedback mismatch (got, want):")
 					for _, diff := range diffs {
 						t.Error("   " + diff)
 					}

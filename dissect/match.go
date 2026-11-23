@@ -3,6 +3,7 @@ package dissect
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ type MatchReader struct {
 	Root   *os.File
 	paths  []string
 	rounds []*Reader
+	errs   []*RoundError
 
 	queries   [][]byte
 	listeners [][]func(r *Reader) error
@@ -32,6 +34,7 @@ func NewMatchReader(in *os.File) (m *MatchReader, err error) {
 		Root:   in,
 		paths:  paths,
 		rounds: make([]*Reader, len(paths)),
+		errs:   make([]*RoundError, len(paths)),
 	}
 	return
 }
@@ -43,7 +46,7 @@ func (m *MatchReader) Listen(pattern []byte, callback func(r *Reader) error) {
 	for i = 0; i < len(m.queries); i++ {
 		if bytes.Equal(m.queries[i], pattern) {
 			m.listeners[i] = append(m.listeners[i], callback)
-			break
+			return
 		}
 	}
 	m.queries = append(m.queries, pattern)
@@ -57,31 +60,76 @@ func (m *MatchReader) read(i int) error {
 	if m.rounds[i] != nil {
 		return nil
 	}
-	f, err := os.Open(m.paths[i])
+	if m.errs[i] != nil {
+		return m.errs[i]
+	}
+	r, err := m.readRound(m.paths[i])
 	if err != nil {
-		return err
+		m.errs[i] = &RoundError{Index: i, Path: m.paths[i], Err: err}
+		return m.errs[i]
+	}
+	m.rounds[i] = r
+	return nil
+}
+
+// readRound reads one round file. A round whose Read failed is discarded,
+// because its round end never ran and its derived data cannot be trusted.
+func (m *MatchReader) readRound(path string) (*Reader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close()
 	r, err := NewReader(f)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	m.rounds[i] = r
-	for i = 0; i < len(m.queries); i++ {
-		for _, listener := range m.listeners[i] {
-			r.Listen(m.queries[i], listener)
+	for q := 0; q < len(m.queries); q++ {
+		for _, listener := range m.listeners[q] {
+			r.Listen(m.queries[q], listener)
 		}
 	}
-	return r.Read()
+	if err := r.Read(); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
+// Read reads every round file. Unreadable files are skipped and reported
+// in the returned *IncompleteMatchError; the readable rounds are kept.
 func (m *MatchReader) Read() error {
+	var skipped []*RoundError
 	for i := range m.paths {
 		if err := m.read(i); err != nil {
-			return err
+			var re *RoundError
+			if !errors.As(err, &re) {
+				return err
+			}
+			skipped = append(skipped, re)
 		}
 	}
+	if len(skipped) > 0 {
+		return &IncompleteMatchError{Skipped: skipped, Total: len(m.paths)}
+	}
 	return nil
+}
+
+// SkippedRounds returns the round files that could not be read, in file order.
+func (m *MatchReader) SkippedRounds() []*RoundError {
+	skipped := make([]*RoundError, 0)
+	for _, e := range m.errs {
+		if e != nil {
+			skipped = append(skipped, e)
+		}
+	}
+	return skipped
+}
+
+// SkippedRound is the JSON form of a round file that could not be read.
+type SkippedRound struct {
+	File  string `json:"file"`
+	Index int    `json:"index"`
+	Error string `json:"error"`
 }
 
 func (m *MatchReader) FirstRound() (r *Reader, err error) {
@@ -120,6 +168,9 @@ func (m *MatchReader) WriteExcel(out io.Writer) error {
 	c := newExcelCompass(f, "Match")
 
 	for i, r := range m.rounds {
+		if r == nil {
+			continue
+		}
 		sheet := fmt.Sprintf("Round %d", i+1)
 		_, err := f.NewSheet(sheet)
 		if err != nil {
@@ -140,8 +191,6 @@ func (m *MatchReader) WriteExcel(out io.Writer) error {
 		c.Down(1).Str("Player")
 		c.Right(1).Str("Team Index")
 		c.Right(1).Str("Kills")
-		c.Right(1).Str("DBNOs")
-		c.Right(1).Str("Revives")
 		c.Right(1).Str("Died")
 		c.Right(1).Str("Assists")
 		c.Right(1).Str("Hs%")
@@ -158,8 +207,6 @@ func (m *MatchReader) WriteExcel(out io.Writer) error {
 			c.Down(1).Left(10).Str(s.Username)
 			c.Right(1).Int(s.TeamIndex)
 			c.Right(1).Int(s.Kills)
-			c.Right(1).Int(s.DBNOs)
-			c.Right(1).Int(s.Revives)
 			c.Right(1).Bool(s.Died)
 			c.Right(1).Int(s.Assists)
 			c.Right(1).Float(s.HeadshotPercentage, 3)
@@ -176,7 +223,11 @@ func (m *MatchReader) WriteExcel(out io.Writer) error {
 		c.Down(1).Left(2).Str("Site")
 		c.Right(1).Str(r.Header.Site)
 		c.Down(1).Left(1).Str("Winning team")
-		c.Right(1).Str(fmt.Sprintf("%s [%d]", r.Header.Teams[winningTeamIndex].Name, winningTeamIndex))
+		if r.roundDecided() {
+			c.Right(1).Str(fmt.Sprintf("%s [%d]", r.Header.Teams[winningTeamIndex].Name, winningTeamIndex))
+		} else {
+			c.Right(1).Str("")
+		}
 		c.Down(1).Left(2).Str("Win condition")
 		c.Right(1).Str(string(r.Header.Teams[winningTeamIndex].WinCondition))
 		c.Down(1).Left(2).Str("Opening kill")
@@ -252,8 +303,6 @@ func (m *MatchReader) WriteExcel(out io.Writer) error {
 	c.Right(1).Str("Team Index")
 	c.Right(1).Str("Rounds")
 	c.Right(1).Str("Kills")
-	c.Right(1).Str("DBNOs")
-	c.Right(1).Str("Revives")
 	c.Right(1).Str("Deaths")
 	c.Right(1).Str("Assists")
 	c.Right(1).Str("Hs%")
@@ -264,8 +313,6 @@ func (m *MatchReader) WriteExcel(out io.Writer) error {
 		c.Right(1).Int(s.TeamIndex)
 		c.Right(1).Int(s.Rounds)
 		c.Right(1).Int(s.Kills)
-		c.Right(1).Int(s.DBNOs)
-		c.Right(1).Int(s.Revives)
 		c.Right(1).Int(s.Deaths)
 		c.Right(1).Int(s.Assists)
 		c.Right(1).Float(s.HeadshotPercentage, 3)
@@ -283,86 +330,38 @@ func (m *MatchReader) WriteJSON(out io.Writer) error {
 	return encoder.Encode(m.Data())
 }
 
-func (m *MatchReader) WriteJSONWithAnalysis(out io.Writer) error {
-	type round struct {
-		Header
-		MatchFeedback      []MatchUpdate       `json:"matchFeedback"`
-		PlayerStats        []PlayerRoundStats  `json:"stats"`
-		UtilityEvents      []UtilityEvent      `json:"utilityEvents,omitempty"`
-		CameraDestructions []CameraDestruction `json:"cameraDestructions,omitempty"`
-		DroneDestructions  []DroneDestruction  `json:"droneDestructions,omitempty"`
-		Reinforcements     []Reinforcement     `json:"reinforcements,omitempty"`
-		Barricades         []BarricadePlace    `json:"barricades,omitempty"`
-		GadgetDeployments  []GadgetDeployment  `json:"gadgetDeployments,omitempty"`
-		Movements          []EntityPositions   `json:"movements,omitempty"`
-		LocationEvents     []LocationEvent     `json:"locationEvents,omitempty"`
-	}
-	type output struct {
-		Rounds      []round            `json:"rounds"`
-		PlayerStats []PlayerMatchStats `json:"stats"`
-		Analysis    *MatchAnalysis     `json:"analysis,omitempty"`
-	}
-	rounds := make([]round, 0)
-	for _, r := range m.rounds {
-		rounds = append(rounds, round{
-			Header:             r.Header,
-			MatchFeedback:      r.MatchFeedback,
-			PlayerStats:        r.PlayerStats(),
-			UtilityEvents:      r.UtilityEvents,
-			CameraDestructions: r.CameraDestructions,
-			DroneDestructions:  r.DroneDestructions,
-			Reinforcements:     r.Reinforcements,
-			Barricades:         r.Barricades,
-			GadgetDeployments:  r.GadgetDeployments,
-			Movements:          r.Movements,
-			LocationEvents:     r.LocationEvents,
-		})
-	}
-	encoder := json.NewEncoder(out)
-	return encoder.Encode(output{
-		Rounds:      rounds,
-		PlayerStats: m.PlayerStats(),
-		Analysis:    AnalyzeMatch(m),
-	})
-}
-
 func (m *MatchReader) Data() any {
 	type round struct {
 		Header
-		MatchFeedback      []MatchUpdate       `json:"matchFeedback"`
-		PlayerStats        []PlayerRoundStats  `json:"stats"`
-		UtilityEvents      []UtilityEvent      `json:"utilityEvents,omitempty"`
-		CameraDestructions []CameraDestruction `json:"cameraDestructions,omitempty"`
-		DroneDestructions  []DroneDestruction  `json:"droneDestructions,omitempty"`
-		Reinforcements     []Reinforcement     `json:"reinforcements,omitempty"`
-		Barricades         []BarricadePlace    `json:"barricades,omitempty"`
-		GadgetDeployments  []GadgetDeployment  `json:"gadgetDeployments,omitempty"`
-		Movements          []EntityPositions   `json:"movements,omitempty"`
-		LocationEvents     []LocationEvent     `json:"locationEvents,omitempty"`
+		MatchFeedback []MatchUpdate      `json:"matchFeedback"`
+		PlayerStats   []PlayerRoundStats `json:"stats"`
+		Warnings      []ReadWarning      `json:"warnings,omitempty"`
 	}
 	type output struct {
-		Rounds      []round            `json:"rounds"`
-		PlayerStats []PlayerMatchStats `json:"stats"`
+		Rounds        []round            `json:"rounds"`
+		PlayerStats   []PlayerMatchStats `json:"stats"`
+		SkippedRounds []SkippedRound     `json:"skippedRounds,omitempty"`
 	}
 	rounds := make([]round, 0)
 	for _, r := range m.rounds {
+		if r == nil {
+			continue
+		}
 		rounds = append(rounds, round{
-			Header:             r.Header,
-			MatchFeedback:      r.MatchFeedback,
-			PlayerStats:        r.PlayerStats(),
-			UtilityEvents:      r.UtilityEvents,
-			CameraDestructions: r.CameraDestructions,
-			DroneDestructions:  r.DroneDestructions,
-			Reinforcements:     r.Reinforcements,
-			Barricades:         r.Barricades,
-			GadgetDeployments:  r.GadgetDeployments,
-			Movements:          r.Movements,
-			LocationEvents:     r.LocationEvents,
+			Header:        r.Header,
+			MatchFeedback: r.MatchFeedback,
+			PlayerStats:   r.PlayerStats(),
+			Warnings:      r.Warnings,
 		})
 	}
+	var skipped []SkippedRound
+	for _, e := range m.SkippedRounds() {
+		skipped = append(skipped, SkippedRound{File: path.Base(e.Path), Index: e.Index, Error: e.Err.Error()})
+	}
 	return output{
-		Rounds:      rounds,
-		PlayerStats: m.PlayerStats(),
+		Rounds:        rounds,
+		PlayerStats:   m.PlayerStats(),
+		SkippedRounds: skipped,
 	}
 }
 

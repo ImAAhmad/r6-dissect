@@ -1,0 +1,322 @@
+diff --git a/dissect/error.go b/dissect/error.go
+index bae3774..86adcb6 100644
+--- a/dissect/error.go
++++ b/dissect/error.go
+@@ -2,7 +2,9 @@ package dissect
+ 
+ import (
+ 	"errors"
++	"fmt"
+ 	"io"
++	"path/filepath"
+ 
+ 	"github.com/klauspost/compress/zstd"
+ )
+@@ -11,8 +13,41 @@ var ErrInvalidFile = errors.New("dissect: not a dissect file")
+ var ErrInvalidFolder = errors.New("dissect: not a match folder")
+ var ErrInvalidStringSep = errors.New("dissect: invalid string separator")
+ 
++// ErrNoReplayData is returned by Read for a replay that has a header and no data after it,
++// such as a round file cut before its first zstd frame.
++var ErrNoReplayData = errors.New("dissect: replay has no data after its header")
++
+ // Ok returns true if err only pertains to EOF (read was successful).
+ func Ok(err error) bool {
+ 	// zstd.ErrMagicMismatch is expected at EOF because .rec files have extra non-compressed data.
+ 	return err == nil || errors.Is(err, io.EOF) || errors.Is(err, zstd.ErrMagicMismatch)
+ }
++
++// RoundError is a round file of a match folder that could not be read.
++type RoundError struct {
++	Index int    // position of the file in the folder's file-name order, from 0
++	Path  string // path of the .rec file
++	Err   error  // what NewReader, Read or opening the file returned
++}
++
++func (e *RoundError) Error() string {
++	return fmt.Sprintf("dissect: round file %s: %v", filepath.Base(e.Path), e.Err)
++}
++
++func (e *RoundError) Unwrap() error { return e.Err }
++
++// IncompleteMatchError is returned by MatchReader.Read when one or more round files
++// could not be read. The rounds that were read are still available; the skipped ones
++// are left out of Data, PlayerStats and WriteExcel and listed in Data as skippedRounds.
++//
++// It does not unwrap to its round errors, so Ok reports false for it even when every
++// round failed with io.EOF: a caller that only checks Ok fails cleanly instead of
++// using a match with missing rounds.
++type IncompleteMatchError struct {
++	Skipped []*RoundError // in file order
++	Total   int           // number of round files in the folder
++}
++
++func (e *IncompleteMatchError) Error() string {
++	return fmt.Sprintf("dissect: %d of %d round files could not be read (first: %v)", len(e.Skipped), e.Total, e.Skipped[0])
++}
+diff --git a/dissect/match.go b/dissect/match.go
+index 5344a17..fafe484 100644
+--- a/dissect/match.go
++++ b/dissect/match.go
+@@ -3,6 +3,7 @@ package dissect
+ import (
+ 	"bytes"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"os"
+@@ -17,7 +18,8 @@ import (
+ type MatchReader struct {
+ 	Root   *os.File
+ 	paths  []string
+-	rounds []*Reader
++	rounds []*Reader // nil until read, and for a round file that could not be read
++	errs   []*RoundError
+ 
+ 	queries   [][]byte
+ 	listeners [][]func(r *Reader) error
+@@ -32,6 +34,7 @@ func NewMatchReader(in *os.File) (m *MatchReader, err error) {
+ 		Root:   in,
+ 		paths:  paths,
+ 		rounds: make([]*Reader, len(paths)),
++		errs:   make([]*RoundError, len(paths)),
+ 	}
+ 	return
+ }
+@@ -50,6 +53,7 @@ func (m *MatchReader) Listen(pattern []byte, callback func(r *Reader) error) {
+ 	m.listeners = append(m.listeners, []func(reader *Reader) error{callback})
+ }
+ 
++// read reads round file i once. A failure is kept and returned as a *RoundError on every call.
+ func (m *MatchReader) read(i int) error {
+ 	if i < 0 || i >= len(m.paths) {
+ 		return ErrInvalidFile
+@@ -57,33 +61,71 @@ func (m *MatchReader) read(i int) error {
+ 	if m.rounds[i] != nil {
+ 		return nil
+ 	}
+-	f, err := os.Open(m.paths[i])
++	if m.errs[i] != nil {
++		return m.errs[i]
++	}
++	r, err := m.readRound(m.paths[i])
+ 	if err != nil {
+-		return err
++		m.errs[i] = &RoundError{Index: i, Path: m.paths[i], Err: err}
++		return m.errs[i]
++	}
++	m.rounds[i] = r
++	return nil
++}
++
++// readRound returns the reader of one round file, or the first error. A round whose Read
++// returned an error, even io.EOF, is not returned: its round end was never computed.
++func (m *MatchReader) readRound(path string) (*Reader, error) {
++	f, err := os.Open(path)
++	if err != nil {
++		return nil, err
+ 	}
+ 	defer f.Close()
+ 	r, err := NewReader(f)
+ 	if err != nil {
+-		return err
++		return nil, err
+ 	}
+-	m.rounds[i] = r
+-	for i = 0; i < len(m.queries); i++ {
+-		for _, listener := range m.listeners[i] {
+-			r.Listen(m.queries[i], listener)
++	for q := range m.queries {
++		for _, listener := range m.listeners[q] {
++			r.Listen(m.queries[q], listener)
+ 		}
+ 	}
+-	return r.Read()
++	if err := r.Read(); err != nil {
++		return nil, err
++	}
++	return r, nil
+ }
+ 
++// Read reads every round file. A round file that cannot be read does not stop the others:
++// Read returns *IncompleteMatchError listing every skipped file, nil when all were read.
+ func (m *MatchReader) Read() error {
++	var skipped []*RoundError
+ 	for i := range m.paths {
+ 		if err := m.read(i); err != nil {
+-			return err
++			var re *RoundError
++			if !errors.As(err, &re) {
++				return err
++			}
++			skipped = append(skipped, re)
+ 		}
+ 	}
++	if len(skipped) > 0 {
++		return &IncompleteMatchError{Skipped: skipped, Total: len(m.paths)}
++	}
+ 	return nil
+ }
+ 
++// SkippedRounds returns the round files that could not be read so far, in file order.
++func (m *MatchReader) SkippedRounds() []*RoundError {
++	skipped := make([]*RoundError, 0)
++	for _, e := range m.errs {
++		if e != nil {
++			skipped = append(skipped, e)
++		}
++	}
++	return skipped
++}
++
+ func (m *MatchReader) FirstRound() (r *Reader, err error) {
+ 	return m.RoundAt(0)
+ }
+@@ -120,6 +162,9 @@ func (m *MatchReader) WriteExcel(out io.Writer) error {
+ 	c := newExcelCompass(f, "Match")
+ 
+ 	for i, r := range m.rounds {
++		if r == nil { // skipped: the file could not be read
++			continue
++		}
+ 		sheet := fmt.Sprintf("Round %d", i+1)
+ 		_, err := f.NewSheet(sheet)
+ 		if err != nil {
+@@ -275,6 +320,13 @@ func (m *MatchReader) WriteJSON(out io.Writer) error {
+ 	return encoder.Encode(m.Data())
+ }
+ 
++// SkippedRound is a round file that is missing from Data's rounds because it could not be read.
++type SkippedRound struct {
++	File  string `json:"file"`  // file name, without the folder
++	Index int    `json:"index"` // position in the folder's file-name order, from 0
++	Error string `json:"error"`
++}
++
+ func (m *MatchReader) Data() any {
+ 	type round struct {
+ 		Header
+@@ -282,20 +334,29 @@ func (m *MatchReader) Data() any {
+ 		PlayerStats   []PlayerRoundStats `json:"stats"`
+ 	}
+ 	type output struct {
+-		Rounds      []round            `json:"rounds"`
+-		PlayerStats []PlayerMatchStats `json:"stats"`
++		Rounds        []round            `json:"rounds"`
++		PlayerStats   []PlayerMatchStats `json:"stats"`
++		SkippedRounds []SkippedRound     `json:"skippedRounds,omitempty"`
+ 	}
+ 	rounds := make([]round, 0)
+ 	for _, r := range m.rounds {
++		if r == nil {
++			continue
++		}
+ 		rounds = append(rounds, round{
+ 			Header:        r.Header,
+ 			MatchFeedback: r.MatchFeedback,
+ 			PlayerStats:   r.PlayerStats(),
+ 		})
+ 	}
++	var skipped []SkippedRound
++	for _, e := range m.SkippedRounds() {
++		skipped = append(skipped, SkippedRound{File: path.Base(e.Path), Index: e.Index, Error: e.Err.Error()})
++	}
+ 	return output{
+-		Rounds:      rounds,
+-		PlayerStats: m.PlayerStats(),
++		Rounds:        rounds,
++		PlayerStats:   m.PlayerStats(),
++		SkippedRounds: skipped,
+ 	}
+ }
+ 
+diff --git a/dissect/reader.go b/dissect/reader.go
+index dd3db7b..e29ade6 100644
+--- a/dissect/reader.go
++++ b/dissect/reader.go
+@@ -235,6 +235,10 @@ func (r *Reader) worker(start int, end int, wg *sync.WaitGroup, matches chan<- m
+ 
+ // Read continues reading the replay past the header until the EOF.
+ func (r *Reader) Read() (err error) {
++	if r.offset >= len(r.b) {
++		// nothing to scan: the workers would index past the end of r.b
++		return ErrNoReplayData
++	}
+ 	numWorkers := 5
+ 	var wg sync.WaitGroup
+ 	channel := make(chan match, 300)
+diff --git a/dissect/stats.go b/dissect/stats.go
+index ed1d098..d025d8f 100644
+--- a/dissect/stats.go
++++ b/dissect/stats.go
+@@ -223,6 +223,9 @@ func (m *MatchReader) PlayerStats() []PlayerMatchStats {
+ 	stats := make([]PlayerMatchStats, 0)
+ 	index := make(map[string]int)
+ 	for i, r := range m.rounds {
++		if r == nil { // skipped: the file could not be read
++			continue
++		}
+ 		for _, p := range r.PlayerStats() {
+ 			if len(stats) == 0 || stats[index[p.Username]].Username != p.Username {
+ 				stats = append(stats, PlayerMatchStats{
+diff --git a/exports/exports.go b/exports/exports.go
+index 85c252e..7512025 100644
+--- a/exports/exports.go
++++ b/exports/exports.go
+@@ -4,6 +4,7 @@ package main
+ import "C"
+ import (
+ 	"encoding/json"
++	"errors"
+ 	"os"
+ 	"unsafe"
+ 
+@@ -62,8 +63,12 @@ func dissect_read(input *C.char) *C.char {
+ 			return C.CString(res)
+ 		}
+ 		if err := m.Read(); err != nil {
+-			res := convertErrorForExport(err)
+-			return C.CString(res)
++			// a match with some unreadable round files is returned with them in skippedRounds
++			var incomplete *dissect.IncompleteMatchError
++			if !errors.As(err, &incomplete) || len(incomplete.Skipped) == incomplete.Total {
++				res := convertErrorForExport(err)
++				return C.CString(res)
++			}
+ 		}
+ 		j := m.Data()
+ 		res := convertForExport(j)
+diff --git a/main.go b/main.go
+index 951e9c7..c78db9b 100644
+--- a/main.go
++++ b/main.go
+@@ -2,8 +2,10 @@ package main
+ 
+ import (
+ 	"encoding/json"
++	"errors"
+ 	"io"
+ 	"os"
++	"path/filepath"
+ 	"strings"
+ 
+ 	"github.com/redraskal/r6-dissect/dissect"
+@@ -148,8 +150,15 @@ func writeMatch(in *os.File, format OutputFormat, out io.Writer) error {
+ 	if err != nil {
+ 		return err
+ 	}
+-	if err := m.Read(); !dissect.Ok(err) {
+-		return err
++	if err := m.Read(); err != nil {
++		var incomplete *dissect.IncompleteMatchError
++		if !errors.As(err, &incomplete) || len(incomplete.Skipped) == incomplete.Total {
++			return err
++		}
++		// the readable rounds are written; the JSON lists the skipped ones as skippedRounds
++		for _, s := range incomplete.Skipped {
++			log.Error().Err(s.Err).Str("file", filepath.Base(s.Path)).Msg("round skipped: the file could not be read")
++		}
+ 	}
+ 	if format == Excel {
+ 		return m.WriteExcel(out)

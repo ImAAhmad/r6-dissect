@@ -1,6 +1,7 @@
 package test
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -32,6 +33,11 @@ func Test_operatorsRedundant(tt *testing.T) {
 }
 
 func assembleOperatorNames(tt *testing.T) (us []string, ubisoft []string) {
+	// these tests depend on Ubisoft's website and fail whenever a new operator is released,
+	// so they only run on demand and in the scheduled operators workflow
+	if os.Getenv("R6_DISSECT_NETWORK_TESTS") == "" {
+		tt.Skip("set R6_DISSECT_NETWORK_TESTS=1 to compare operators with Ubisoft's website")
+	}
 	pkg, err := loadPackage()
 	if err != nil {
 		tt.Fatal(err)
@@ -63,7 +69,7 @@ func assembleOperatorNames(tt *testing.T) (us []string, ubisoft []string) {
 	ubiOpNames := make([]string, len(ubiOpsMap))
 	i = 0
 	for n := range ubiOpsMap {
-		ubiOpNames[i] = strings.ReplaceAll(strings.ToLower(n), "-", "")
+		ubiOpNames[i] = strings.ToLower(n)
 		i++
 	}
 	return ourOpNames, ubiOpNames

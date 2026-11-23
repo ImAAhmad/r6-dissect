@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -53,8 +54,11 @@ type Player struct {
 	RoleName     string   `json:"roleName,omitempty"`
 	RolePortrait int      `json:"rolePortrait,omitempty"`
 	Spawn        string   `json:"spawn,omitempty"`
+	StartingRoom string   `json:"startingRoom,omitempty"`
+	Loadout      *Loadout `json:"loadout,omitempty"`
 	DissectID    []byte   `json:"-" deep:"-"` // dissect player id at end of packet (4 bytes)
 	uiID         uint64   `json:"-" deep:"-"`
+	slotID       []byte   `json:"-" deep:"-"` // Y10S4+: player slot entity ID, links defuser pawns to players (4 bytes)
 }
 
 type stringerIntMarshal struct {
@@ -123,6 +127,10 @@ const (
 	NighthavenLabsY10  Map = 418119057546
 	ConsulateY10       Map = 418126004176
 	FortressY10        Map = 398899676157
+	VillaY10           Map = 409325881472
+	TowerY10           Map = 423767322185
+	CoastlineY10       Map = 436375283234
+	CalypsoCasino      Map = 419965653950
 
 	KilledOpponents  WinCondition = "KilledOpponents"
 	SecuredArea      WinCondition = "SecuredArea" // TODO
@@ -212,6 +220,7 @@ const (
 	Rauora      Operator = 386098331923
 	Denari      Operator = 374667787937
 	SolidSnake  Operator = 444310693746
+	Noor        Operator = 456757346397
 )
 
 // duplicated code here could be avoided by defining a generic function accepting any Number type.
@@ -246,6 +255,12 @@ func (i *GameMode) UnmarshalJSON(data []byte) (err error) {
 	}
 	*i = GameMode(x.ID)
 	return
+}
+
+// Known reports whether i is a declared Map constant. An unknown map still
+// parses; its name prints as Map(<id>), which is stringer's fallback.
+func (i Map) Known() bool {
+	return !strings.HasPrefix(i.String(), "Map(")
 }
 
 func (i Map) MarshalJSON() (text []byte, err error) {
@@ -339,14 +354,116 @@ func (r *Reader) readHeaderMagic() error {
 	return nil
 }
 
-func (r *Reader) readHeader() (Header, error) {
-	props := make(map[string]string)
-	gmSettings := make([]int, 0)
-	players := make([]Player, 0)
-	// Loops until the last property is mapped.
+type headerEntry struct {
+	key, value string
+}
+
+// headerPlayerKeys are the header keys that belong to a player. Every player starts with playerid.
+var headerPlayerKeys = map[string]bool{
+	"playerid": true, "profileid": true, "playername": true, "team": true, "heroname": true,
+	"alliance": true, "roleimage": true, "rolename": true, "roleportrait": true,
+}
+
+// headerMatchKeys are the known header keys that belong to the match. One of them ends the
+// current player; unknown keys do not, so that a player key added in a later season keeps
+// the player together.
+var headerMatchKeys = map[string]bool{
+	"version": true, "code": true, "datetime": true, "matchtype": true, "worldid": true,
+	"recordingplayerid": true, "isspectator": true, "recordingprofileid": true, "additionaltags": true,
+	"gamemodeid": true, "roundspermatch": true, "roundspermatchovertime": true, "roundnumber": true,
+	"overtimeroundnumber": true, "teamname0": true, "startingteamscore0": true, "teamname1": true,
+	"startingteamscore1": true, "gmsetting": true, "maxnbplayersperteam": true, "playlistcategory": true,
+	"id": true, "starttime": true, "teamscore0": true, "teamscore1": true,
+}
+
+// splitHeaderEntries separates the header into match properties, gamemode settings and players.
+// A player starts with playerid and ends at the next playerid or known match key.
+// Since Y11S2 the header lists half of the players before the match properties.
+func splitHeaderEntries(entries []headerEntry) (props map[string]string, gmSettings []int, players []Player, err error) {
+	props = make(map[string]string)
+	gmSettings = make([]int, 0)
+	players = make([]Player, 0)
 	currentPlayer := Player{}
 	playerData := false
-	for lastProp := false; !lastProp; {
+	for _, e := range entries {
+		k, v := e.key, e.value
+		if playerData && (k == "playerid" || headerMatchKeys[k]) {
+			players = append(players, currentPlayer)
+			playerData = false
+		}
+		if k == "playerid" {
+			playerData = true
+			currentPlayer = Player{}
+		}
+		if !playerData {
+			if k == "gmsetting" {
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				gmSettings = append(gmSettings, n)
+			} else {
+				props[k] = v
+			}
+			continue
+		}
+		switch k {
+		case "playerid":
+			n, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			currentPlayer.ID = n
+		case "playername":
+			currentPlayer.Username = v
+		case "team":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			currentPlayer.TeamIndex = n
+		case "heroname":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			currentPlayer.HeroName = n
+		case "alliance":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			currentPlayer.Alliance = n
+		case "roleimage":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			currentPlayer.RoleImage = n
+		case "rolename":
+			currentPlayer.RoleName = v
+		case "roleportrait":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			currentPlayer.RolePortrait = n
+		default:
+			if !headerPlayerKeys[k] {
+				props[k] = v
+			}
+		}
+	}
+	if playerData {
+		players = append(players, currentPlayer)
+	}
+	return props, gmSettings, players, nil
+}
+
+func (r *Reader) readHeader() (Header, error) {
+	// Reads until the last property.
+	entries := make([]headerEntry, 0)
+	for {
 		k, err := r.readHeaderString()
 		if err != nil {
 			return Header{}, err
@@ -355,74 +472,14 @@ func (r *Reader) readHeader() (Header, error) {
 		if err != nil {
 			return Header{}, err
 		}
-		if k == "playerid" {
-			if playerData {
-				players = append(players, currentPlayer)
-			}
-			playerData = true
-			currentPlayer = Player{}
+		entries = append(entries, headerEntry{k, v})
+		if k == "teamscore1" {
+			break
 		}
-		if (k == "playlistcategory" || k == "id") && playerData {
-			players = append(players, currentPlayer)
-			playerData = false
-		}
-		if !playerData {
-			if k == "gmsetting" {
-				n, err := strconv.Atoi(v)
-				if err != nil {
-					return Header{}, err
-				}
-				gmSettings = append(gmSettings, n)
-			} else {
-				props[k] = v
-			}
-		} else {
-			switch k {
-			case "playerid":
-				n, err := strconv.ParseUint(v, 10, 64)
-				if err != nil {
-					return Header{}, err
-				}
-				currentPlayer.ID = n
-			case "playername":
-				currentPlayer.Username = v
-			case "team":
-				n, err := strconv.Atoi(v)
-				if err != nil {
-					return Header{}, err
-				}
-				currentPlayer.TeamIndex = n
-			case "heroname":
-				n, err := strconv.Atoi(v)
-				if err != nil {
-					return Header{}, err
-				}
-				currentPlayer.HeroName = n
-			case "alliance":
-				n, err := strconv.Atoi(v)
-				if err != nil {
-					return Header{}, err
-				}
-				currentPlayer.Alliance = n
-			case "roleimage":
-				n, err := strconv.Atoi(v)
-				if err != nil {
-					return Header{}, err
-				}
-				currentPlayer.RoleImage = n
-			case "rolename":
-				currentPlayer.RoleName = v
-			case "roleportrait":
-				n, err := strconv.Atoi(v)
-				if err != nil {
-					return Header{}, err
-				}
-				currentPlayer.RolePortrait = n
-			default:
-				props[k] = v
-			}
-		}
-		_, lastProp = props["teamscore1"]
+	}
+	props, gmSettings, players, err := splitHeaderEntries(entries)
+	if err != nil {
+		return Header{}, err
 	}
 	h := Header{
 		Teams:      [2]Team{},
@@ -455,6 +512,9 @@ func (r *Reader) readHeader() (Header, error) {
 		return h, err
 	}
 	h.Map = Map(n)
+	if !h.Map.Known() {
+		log.Warn().Int("worldid", n).Msg("unknown map id; add it to the Map constants in header.go")
+	}
 	// Add recording player id
 	u, err := strconv.ParseUint(props["recordingplayerid"], 10, 64)
 	if err != nil {
@@ -542,24 +602,38 @@ func (r *Reader) deriveTeamRoles() {
 	if len(r.Header.Players) > 10 {
 		log.Warn().Msg("tracked players greater than 10")
 	}
+	// rows already written by scoreboard packets move with their players, and so does the
+	// state keyed by player index
+	rows := make([]ScoreboardPlayer, 0, len(r.Header.Players))
+	newIndex := make([]int, len(r.Header.Players))
 	players := r.Header.Players[:0]
-	for _, p := range r.Header.Players {
+	for i, p := range r.Header.Players {
 		log.Debug().Interface("player", p).Send()
 		if p.Operator != 0 {
+			newIndex[i] = len(players)
 			players = append(players, p)
-			r.Scoreboard.Players = append(r.Scoreboard.Players, ScoreboardPlayer{
-				ID: p.DissectID,
-			})
+			row := ScoreboardPlayer{ID: p.DissectID}
+			if i < len(r.Scoreboard.Players) {
+				row = r.Scoreboard.Players[i]
+			}
+			rows = append(rows, row)
 		} else {
+			newIndex[i] = -1
 			log.Warn().Str("username", p.Username).Msg("operator id was 0, removing from list")
 		}
 	}
 	r.Header.Players = players
+	r.Scoreboard.Players = rows
+	r.movePlayerIndices(newIndex)
 	for _, p := range r.Header.Players {
 		if p.Operator == Recruit {
 			continue
 		}
 		role := p.Operator.Role()
+		if role == "" {
+			log.Warn().Uint64("op", uint64(p.Operator)).Str("username", p.Username).Msg("unknown operator, cannot derive team role from it")
+			continue
+		}
 		teamIndex := p.TeamIndex
 		oppositeTeamIndex := teamIndex ^ 1
 		if role == Attack {

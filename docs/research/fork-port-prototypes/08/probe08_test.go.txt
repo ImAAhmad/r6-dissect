@@ -1,0 +1,104 @@
+package dissect
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/rs/zerolog"
+)
+
+// PROBE08_DIRS: colon-separated list of directories; each directory holding .rec files is one match.
+func TestProbe08(t *testing.T) {
+	dirs := os.Getenv("PROBE08_DIRS")
+	if dirs == "" {
+		t.Skip()
+	}
+	zerolog.SetGlobalLevel(zerolog.Disabled)
+	matches := map[string][]string{}
+	for _, root := range strings.Split(dirs, ":") {
+		filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() && strings.HasSuffix(p, ".rec") {
+				matches[filepath.Dir(p)] = append(matches[filepath.Dir(p)], p)
+			}
+			return nil
+		})
+	}
+	keys := make([]string, 0, len(matches))
+	for k := range matches {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, dir := range keys {
+		files := matches[dir]
+		sort.Strings(files)
+		seen := map[string]int{}       // username -> first round
+		profiles := map[string]string{} // username -> profileID
+		var lines []string
+		for ri, f := range files {
+			fh, err := os.Open(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			probeDropped = nil
+			r, err := NewReader(fh)
+			if err == nil {
+				err = r.Read()
+			}
+			fh.Close()
+			if r == nil {
+				lines = append(lines, fmt.Sprintf("  R%02d open error %v", ri+1, err))
+				continue
+			}
+			hdr := 0
+			_ = hdr
+			names := []string{}
+			for _, p := range r.Header.Players {
+				names = append(names, fmt.Sprintf("%s/t%d", p.Username, p.TeamIndex))
+				if _, ok := seen[p.Username]; !ok {
+					seen[p.Username] = ri + 1
+				}
+				if old, ok := profiles[p.Username]; ok && old != p.ProfileID {
+					lines = append(lines, fmt.Sprintf("  R%02d PROFILE CHANGE %s %s -> %s", ri+1, p.Username, old, p.ProfileID))
+				}
+				profiles[p.Username] = p.ProfileID
+			}
+			flag := ""
+			if len(r.Header.Players) != len(r.Scoreboard.Players) || len(r.Header.Players) != 10 || r.playersRead != 10 {
+				flag = " <<<"
+			}
+			drops := ""
+			for _, d := range probeDropped {
+				drops += fmt.Sprintf(" drop(%s idx=%d v=%d)", d.kind, d.idx, d.v)
+			}
+			lines = append(lines, fmt.Sprintf("  R%02d code=%d players=%d sb=%d playersRead=%d readOrder=%d err=%v%s%s", ri+1, r.Header.CodeVersion, len(r.Header.Players), len(r.Scoreboard.Players), r.playersRead, len(r.readPlayerOrder), err, drops, flag))
+			if flag != "" {
+				lines = append(lines, "      "+strings.Join(names, " "))
+			}
+		}
+		late := []string{}
+		for u, first := range seen {
+			if first > 1 {
+				late = append(late, fmt.Sprintf("%s(R%d)", u, first))
+			}
+		}
+		// profiles shared by multiple usernames
+		byProf := map[string][]string{}
+		for u, p := range profiles {
+			byProf[p] = append(byProf[p], u)
+		}
+		multi := []string{}
+		for p, us := range byProf {
+			if len(us) > 1 && p != "" {
+				multi = append(multi, p+"="+strings.Join(us, ","))
+			}
+		}
+		fmt.Printf("MATCH %s rounds=%d distinctUsernames=%d lateFirstSeen=%v profileShared=%v\n", dir, len(files), len(seen), late, multi)
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+	}
+}

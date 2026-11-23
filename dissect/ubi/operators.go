@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"golang.org/x/net/html"
 )
@@ -47,7 +48,8 @@ func GetOperatorMap() (opNames map[string]Operator, err error) {
 	// convert list to map
 	opNames = map[string]Operator{}
 	for _, op := range operatorsJSON {
-		opNames[op.Slug] = Operator{
+		// slugs may contain dashes (e.g. "solid-snake"), which Go identifiers cannot
+		opNames[strings.ReplaceAll(op.Slug, "-", "")] = Operator{
 			IsAttacker: op.IsAttacker,
 		}
 	}
@@ -68,16 +70,20 @@ func parseOperatorHTML(body io.ReadCloser) ([]*UbiOperatorJSON, error) {
 			if err := z.Err(); !errors.Is(err, io.EOF) {
 				return nil, fmt.Errorf("error during HTML parsing: %w", err)
 			}
-			return nil, errors.New("error: no script tag found in HTML")
+			return nil, errors.New("error: no operator data found in HTML")
 		}
 
 		if !inScript && tt == html.StartTagToken && z.Token().Data == "script" {
-			// <script> tag found, next html.TextToken should be our JS code
+			// <script> tag found, next html.TextToken may be our JS code
 			inScript = true
 		} else if inScript && tt == html.TextToken {
-			// we expect to find JS code here
+			inScript = false
 			// prepare data by unescaping
 			rawJS := html.UnescapeString(z.Token().Data)
+			// the page contains several scripts, skip the ones without our data
+			if !regexJSON.MatchString(rawJS) {
+				continue
+			}
 			// extract JSON from JS
 			ubiData, err := parseOperatorJS(rawJS)
 			if err != nil {
@@ -86,8 +92,8 @@ func parseOperatorHTML(body io.ReadCloser) ([]*UbiOperatorJSON, error) {
 			// return nested JSON data
 			return ubiData.ContentfulGraphQL.OperatorsListContainer.Content, nil
 		} else if inScript && tt == html.EndTagToken {
-			// JS expected, but tag was closed before anything was found
-			return nil, errors.New("error: script tag ended without content")
+			// external or empty script tag, keep looking
+			inScript = false
 		}
 	}
 }

@@ -26,12 +26,14 @@
 		"teams": [
 			{
 				"name": "JAY",
+				"startingScore": 0,
 				"score": 0,
 				"won": false,
 				"role": "Attack"
 			},
 			{
 				"name": "GOHLY",
+				"startingScore": 0,
 				"score": 1,
 				"won": true,
 				"winCondition": "KilledOpponents",
@@ -53,7 +55,14 @@
 				"roleImage": 32822532301,
 				"roleName": "FROST",
 				"rolePortrait": 27880782933,
-				"spawn": "1F Kitchen, 1F Dining Room"
+				"spawn": "1F Kitchen, 1F Dining Room",
+				"startingRoom": "1F Dining Room",
+				"loadout": {
+					"primary": 13333481354,
+					"secondary": 39149216440,
+					"gadget": 133651070282,
+					"ability": 133651069258
+				}
 			},
 			{
 				"id": 6723954847491341113,
@@ -69,7 +78,14 @@
 				"roleImage": 1494825824,
 				"roleName": "CASTLE",
 				"rolePortrait": 27880706756,
-				"spawn": "1F Kitchen, 1F Dining Room"
+				"spawn": "1F Kitchen, 1F Dining Room",
+				"startingRoom": "1F Dining Room",
+				"loadout": {
+					"primary": 1366019640,
+					"secondary": 139558931725,
+					"gadget": 243267468233,
+					"ability": 133651069216
+				}
 			},
 			{
 				"id": 13898686610997036983,
@@ -85,7 +101,14 @@
 				"roleImage": 104189664639,
 				"roleName": "ARUNI",
 				"rolePortrait": 104189664665,
-				"spawn": "1F Kitchen, 1F Dining Room"
+				"spawn": "1F Kitchen, 1F Dining Room",
+				"startingRoom": "1F Dining Room",
+				"loadout": {
+					"primary": 78526932091,
+					"secondary": 38581443676,
+					"gadget": 133651070258,
+					"ability": 201523838512
+				}
 			},
 			{
 				"id": 4288684853475442243,
@@ -101,7 +124,14 @@
 				"roleImage": 121604587892,
 				"roleName": "ALIBI",
 				"rolePortrait": 104189662084,
-				"spawn": "1F Kitchen, 1F Dining Room"
+				"spawn": "1F Kitchen, 1F Dining Room",
+				"startingRoom": "1F Kitchen",
+				"loadout": {
+					"primary": 127174504008,
+					"secondary": 127174503972,
+					"gadget": 127363389074,
+					"ability": 133651069174
+				}
 			},
 			{
 				"id": 7276187288578330811,
@@ -117,7 +147,14 @@
 				"roleImage": 32822532305,
 				"roleName": "VALKYRIE",
 				"rolePortrait": 27880747293,
-				"spawn": "1F Kitchen, 1F Dining Room"
+				"spawn": "1F Kitchen, 1F Dining Room",
+				"startingRoom": "1F Kitchen",
+				"loadout": {
+					"primary": 34160268747,
+					"secondary": 34160268720,
+					"gadget": 133651070294,
+					"ability": 133651069390
+				}
 			},
 			{
 				"id": 6366317606386794496,
@@ -129,7 +166,13 @@
 					"id": 92270642760
 				},
 				"alliance": 0,
-				"spawn": "RANDOM"
+				"spawn": "RANDOM",
+				"loadout": {
+					"primary": 1366019340,
+					"secondary": 1366019448,
+					"gadget": 133651070288,
+					"ability": 133651069378
+				}
 			},
 			{
 				"id": 6366317606386794496,
@@ -141,7 +184,13 @@
 					"id": 104189664390
 				},
 				"alliance": 0,
-				"spawn": "Cliffside"
+				"spawn": "Cliffside",
+				"loadout": {
+					"primary": 1366019220,
+					"secondary": 1366019472,
+					"gadget": 133651070306,
+					"ability": 201523838482
+				}
 			},
 			{
 				"id": 6366317606386794496,
@@ -153,7 +202,13 @@
 					"id": 92270642578
 				},
 				"alliance": 0,
-				"spawn": "Cliffside"
+				"spawn": "Cliffside",
+				"loadout": {
+					"primary": 1366019328,
+					"secondary": 1366019496,
+					"gadget": 133651070306,
+					"ability": 133651069282
+				}
 			},
 			{
 				"id": 6366317606386794496,
@@ -165,7 +220,13 @@
 					"id": 92270642656
 				},
 				"alliance": 0,
-				"spawn": "Cliffside"
+				"spawn": "Cliffside",
+				"loadout": {
+					"primary": 1366019316,
+					"secondary": 1366019448,
+					"gadget": 133651070306,
+					"ability": 133651069180
+				}
 			},
 			{
 				"id": 6366317606386794496,
@@ -177,7 +238,13 @@
 					"id": 374667788042
 				},
 				"alliance": 0,
-				"spawn": "Cliffside"
+				"spawn": "Cliffside",
+				"loadout": {
+					"primary": 1366019328,
+					"secondary": 39149214734,
+					"gadget": 263047965420,
+					"ability": 374667788026
+				}
 			}
 		],
 		"gmSettings": [
@@ -269,6 +336,8 @@
 			"username": "Wry2K",
 			"time": "0:23",
 			"timeInSeconds": 23,
+			"phase": "Prep",
+			"elapsedSeconds": -23,
 			"operator": {
 				"name": "Grim",
 				"id": 374667788042
@@ -282,6 +351,8 @@
 			"username": "KicksFN.",
 			"time": "0:06",
 			"timeInSeconds": 6,
+			"phase": "Prep",
+			"elapsedSeconds": -6,
 			"operator": {
 				"name": "IQ",
 				"id": 92270642578
@@ -296,7 +367,11 @@
 			"target": "Moves.oL",
 			"headshot": false,
 			"time": "2:34",
-			"timeInSeconds": 154
+			"timeInSeconds": 154,
+			"phase": "Action",
+			"elapsedSeconds": 25,
+			"weaponID": 127174504008,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -307,7 +382,11 @@
 			"target": "Wry2K",
 			"headshot": false,
 			"time": "2:02",
-			"timeInSeconds": 122
+			"timeInSeconds": 122,
+			"phase": "Action",
+			"elapsedSeconds": 57,
+			"weaponID": 78526932091,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -318,7 +397,11 @@
 			"target": "KicksFN.",
 			"headshot": true,
 			"time": "2:01",
-			"timeInSeconds": 121
+			"timeInSeconds": 121,
+			"phase": "Action",
+			"elapsedSeconds": 58,
+			"weaponID": 78526932091,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -329,7 +412,11 @@
 			"target": "Dec-.",
 			"headshot": false,
 			"time": "1:50",
-			"timeInSeconds": 110
+			"timeInSeconds": 110,
+			"phase": "Action",
+			"elapsedSeconds": 69,
+			"weaponID": 78526932091,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -340,7 +427,11 @@
 			"target": "GiIiBVG.a5",
 			"headshot": true,
 			"time": "1:41",
-			"timeInSeconds": 101
+			"timeInSeconds": 101,
+			"phase": "Action",
+			"elapsedSeconds": 78,
+			"weaponID": 1366019340,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -351,7 +442,11 @@
 			"target": "Iefou",
 			"headshot": false,
 			"time": "1:17",
-			"timeInSeconds": 77
+			"timeInSeconds": 77,
+			"phase": "Action",
+			"elapsedSeconds": 102,
+			"weaponID": 1366019340,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -362,7 +457,11 @@
 			"target": "JayPhistol.",
 			"headshot": false,
 			"time": "1:00",
-			"timeInSeconds": 60
+			"timeInSeconds": 60,
+			"phase": "Action",
+			"elapsedSeconds": 119,
+			"weaponID": 13333481354,
+			"weaponSlot": "primary"
 		}
 	]
 }

@@ -4,7 +4,9 @@ package main
 import "C"
 import (
 	"encoding/json"
+	"errors"
 	"os"
+	"unsafe"
 
 	"github.com/redraskal/r6-dissect/dissect"
 	"github.com/rs/zerolog"
@@ -36,56 +38,68 @@ func convertErrorForExport(err error) string {
 	})
 }
 
+// dissect_read parses a .rec file or match folder and returns the result as a JSON string.
+// The returned string is allocated with malloc and must be released with dissect_free.
+//
 //export dissect_read
 func dissect_read(input *C.char) *C.char {
 	zerolog.SetGlobalLevel(zerolog.Disabled)
-	path := C.GoString(input)
+	return C.CString(readJSON(C.GoString(input)))
+}
+
+// readJSON parses the .rec file or match folder at path and returns
+// {"data": ...} or {"error": "..."} as JSON.
+func readJSON(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
-		res := convertErrorForExport(err)
-		return C.CString(res)
+		return convertErrorForExport(err)
 	}
 	defer f.Close()
 	s, err := f.Stat()
 	if err != nil {
-		res := convertErrorForExport(err)
-		return C.CString(res)
+		return convertErrorForExport(err)
 	}
 	if s.IsDir() {
 		m, err := dissect.NewMatchReader(f)
 		if err != nil {
-			res := convertErrorForExport(err)
-			return C.CString(res)
+			return convertErrorForExport(err)
 		}
 		if err := m.Read(); err != nil {
-			res := convertErrorForExport(err)
-			return C.CString(res)
+			var incomplete *dissect.IncompleteMatchError
+			if !errors.As(err, &incomplete) || len(incomplete.Skipped) == incomplete.Total {
+				return convertErrorForExport(err)
+			}
 		}
 		j := m.Data()
-		res := convertForExport(j)
-		return C.CString(res)
+		return convertForExport(j)
 	} else {
 		r, err := dissect.NewReader(f)
 		if err != nil {
-			res := convertErrorForExport(err)
-			return C.CString(res)
+			return convertErrorForExport(err)
 		}
 		if err := r.Read(); !dissect.Ok(err) {
-			res := convertErrorForExport(err)
-			return C.CString(res)
+			return convertErrorForExport(err)
 		}
 		type round struct {
 			dissect.Header
 			MatchFeedback []dissect.MatchUpdate      `json:"matchFeedback"`
 			PlayerStats   []dissect.PlayerRoundStats `json:"stats"`
+			Warnings      []dissect.ReadWarning      `json:"warnings,omitempty"`
 		}
-		res := convertForExport(round{
+		return convertForExport(round{
 			r.Header,
 			r.MatchFeedback,
 			r.PlayerStats(),
+			r.Warnings,
 		})
-		return C.CString(res)
 	}
+}
+
+// dissect_free releases a string returned by dissect_read.
+//
+//export dissect_free
+func dissect_free(ptr *C.char) {
+	C.free(unsafe.Pointer(ptr))
 }
 
 func main() {}
