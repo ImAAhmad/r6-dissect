@@ -1,0 +1,343 @@
+diff --git a/dissect/decompress.go b/dissect/decompress.go
+new file mode 100644
+index 0000000..eea25e0
+--- /dev/null
++++ b/dissect/decompress.go
+@@ -0,0 +1,44 @@
++package dissect
++
++import (
++	"bytes"
++
++	"github.com/klauspost/compress/zstd"
++)
++
++// maxSizeHintRatio caps the hint relative to the compressed size (worst seen: 13x),
++// so a corrupt frame header cannot request gigabytes up front.
++const maxSizeHintRatio = 32
++
++// decompressedSizeHint sums the content sizes declared by the zstd frame headers in compressed.
++// It is only a capacity hint: a wrong or missing size costs a reallocation, never output.
++func decompressedSizeHint(compressed []byte) int {
++	magic := []byte{0x28, 0xB5, 0x2F, 0xFD}
++	limit := uint64(maxSizeHintRatio) * uint64(len(compressed))
++	var total uint64
++	for i := 0; ; {
++		k := bytes.Index(compressed[i:], magic)
++		if k < 0 {
++			break
++		}
++		i += k
++		var h zstd.Header
++		if h.Decode(compressed[i:]) == nil && h.HasFCS {
++			total += h.FrameContentSize
++			if total > limit {
++				return int(limit)
++			}
++		}
++		i += len(magic)
++	}
++	return int(total)
++}
++
++// appendWriter is an io.Writer that appends to b. Unlike bytes.Buffer, which doubles
++// its capacity, append grows large slices by about 1.25x.
++type appendWriter struct{ b []byte }
++
++func (w *appendWriter) Write(p []byte) (int, error) {
++	w.b = append(w.b, p...)
++	return len(p), nil
++}
+diff --git a/dissect/memory_test.go b/dissect/memory_test.go
+new file mode 100644
+index 0000000..6c4dd7a
+--- /dev/null
++++ b/dissect/memory_test.go
+@@ -0,0 +1,224 @@
++package dissect
++
++import (
++	"bytes"
++	"encoding/binary"
++	"io"
++	"os"
++	"runtime"
++	"testing"
++	"time"
++
++	"github.com/rs/zerolog"
++)
++
++const (
++	chunkedFixture    = "test/data/replays/valid/Y11S2/custom_early_plant.rec" // Y8S4+: chunked zstd sections
++	nonChunkedFixture = "test/data/replays/valid/Y8S1/ranked_1.rec"            // pre-Y8S4: one zstd stream
++	matchFixtureDir   = "test/data/replays/valid/Y8S2"
++)
++
++func settledGoroutines() int {
++	for i := 0; i < 5; i++ {
++		runtime.GC()
++		time.Sleep(20 * time.Millisecond)
++	}
++	return runtime.NumGoroutine()
++}
++
++func readOnce(t *testing.T, path string) {
++	t.Helper()
++	f, err := os.Open(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer f.Close()
++	r, err := NewReader(f)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := r.Read(); !Ok(err) {
++		t.Fatal(err)
++	}
++}
++
++func TestNewReader_DoesNotLeakGoroutines(t *testing.T) {
++	defer zerolog.SetGlobalLevel(zerolog.GlobalLevel())
++	zerolog.SetGlobalLevel(zerolog.Disabled)
++	for _, tc := range []struct{ name, path string }{
++		{"chunked", chunkedFixture},
++		{"nonChunked", nonChunkedFixture},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			readOnce(t, tc.path) // warm up lazily started runtime goroutines
++			before := settledGoroutines()
++			const n = 10
++			for i := 0; i < n; i++ {
++				readOnce(t, tc.path)
++			}
++			after := settledGoroutines()
++			t.Logf("GOMAXPROCS=%d goroutines before=%d after=%d (%d reads)", runtime.GOMAXPROCS(0), before, after, n)
++			if after > before {
++				t.Errorf("goroutines grew by %d over %d reads (leaked zstd decoder)", after-before, n)
++			}
++		})
++	}
++}
++
++func TestMatchReader_DoesNotPinRoundBuffers(t *testing.T) {
++	defer zerolog.SetGlobalLevel(zerolog.GlobalLevel())
++	zerolog.SetGlobalLevel(zerolog.Disabled)
++	f, err := os.Open(matchFixtureDir)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer f.Close()
++	m, err := NewMatchReader(f)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := m.Read(); !Ok(err) {
++		t.Fatal(err)
++	}
++	runtime.GC()
++	runtime.GC()
++	var ms runtime.MemStats
++	runtime.ReadMemStats(&ms)
++	t.Logf("rounds=%d live heap after Read+GC: %.1f MiB", m.NumRounds(), float64(ms.HeapAlloc)/(1<<20))
++	for i := 0; i < m.NumRounds(); i++ {
++		r, _ := m.RoundAt(i)
++		for _, p := range r.Header.Players {
++			if cap(p.DissectID) > 16 {
++				t.Errorf("round %d player %q: DissectID cap=%d, still a window into the round buffer", i, p.Username, cap(p.DissectID))
++			}
++		}
++		for _, p := range r.Scoreboard.Players {
++			if cap(p.ID) > 16 {
++				t.Errorf("round %d: Scoreboard ID cap=%d, still a window into the round buffer", i, cap(p.ID))
++			}
++		}
++	}
++	const limit = 32 << 20
++	if ms.HeapAlloc > limit {
++		t.Errorf("live heap %d MiB > %d MiB after Read: round buffers are still reachable", ms.HeapAlloc>>20, limit>>20)
++	}
++	runtime.KeepAlive(m)
++}
++
++func TestNewReader_CorruptInputDoesNotLeakGoroutines(t *testing.T) {
++	defer zerolog.SetGlobalLevel(zerolog.GlobalLevel())
++	zerolog.SetGlobalLevel(zerolog.Disabled)
++	for _, path := range []string{chunkedFixture, nonChunkedFixture} {
++		raw, err := os.ReadFile(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++		for _, mode := range []string{"truncate", "corrupt"} {
++			t.Run(path+"/"+mode, func(t *testing.T) {
++				b := append([]byte(nil), raw...)
++				switch mode {
++				case "truncate":
++					b = b[:len(b)/2]
++				case "corrupt":
++					for i := len(b) / 3; i < len(b)/3+4096; i++ {
++						b[i] ^= 0x5A
++					}
++				}
++				before := settledGoroutines()
++				errs := 0
++				for i := 0; i < 10; i++ {
++					r, err := NewReader(bytesReader(b))
++					if err == nil {
++						err = r.Read()
++					}
++					if err != nil {
++						errs++
++					}
++				}
++				after := settledGoroutines()
++				t.Logf("before=%d after=%d errors=%d/10", before, after, errs)
++				if after > before {
++					t.Errorf("goroutines grew by %d", after-before)
++				}
++			})
++		}
++	}
++}
++
++func bytesReader(b []byte) *bytesReaderT { return &bytesReaderT{b: b} }
++
++type bytesReaderT struct{ b []byte }
++
++func (r *bytesReaderT) Read(p []byte) (int, error) {
++	if len(r.b) == 0 {
++		return 0, io.EOF
++	}
++	n := copy(p, r.b)
++	r.b = r.b[n:]
++	return n, nil
++}
++
++func BenchmarkNewReader(b *testing.B) {
++	defer zerolog.SetGlobalLevel(zerolog.GlobalLevel())
++	zerolog.SetGlobalLevel(zerolog.Disabled)
++	for _, path := range []string{chunkedFixture, nonChunkedFixture} {
++		raw, err := os.ReadFile(path)
++		if err != nil {
++			b.Fatal(err)
++		}
++		b.Run(path, func(b *testing.B) {
++			b.ReportAllocs()
++			for i := 0; i < b.N; i++ {
++				if _, err := NewReader(bytesReader(raw)); err != nil {
++					b.Fatal(err)
++				}
++			}
++		})
++	}
++}
++
++func TestDecompressedSizeHint(t *testing.T) {
++	defer zerolog.SetGlobalLevel(zerolog.GlobalLevel())
++	zerolog.SetGlobalLevel(zerolog.Disabled)
++	for _, p := range []string{chunkedFixture, nonChunkedFixture} {
++		raw, _ := os.ReadFile(p)
++		r, err := NewReader(bytes.NewReader(raw))
++		if err != nil {
++			t.Fatal(err)
++		}
++		if h := decompressedSizeHint(raw); h != len(r.b) {
++			t.Errorf("%s: hint %d != %d", p, h, len(r.b))
++		}
++	}
++	if h := decompressedSizeHint([]byte{0x28, 0xB5, 0x2F, 0xFD, 0x00, 0x00}); h != 0 {
++		t.Errorf("no_fcs: %d", h)
++	}
++	g := []byte{0x28, 0xB5, 0x2F, 0xFD, 0xE0}
++	g = binary.LittleEndian.AppendUint64(g, 1<<40)
++	g = append(g, 0x01, 0x00, 0x00)
++	g = append(g, make([]byte, 64-len(g))...)
++	if h := decompressedSizeHint(g); h > 32*len(g) {
++		t.Errorf("garbage_and_cap: %d", h)
++	} else {
++		t.Logf("garbage_and_cap hint=%d", h)
++	}
++}
++
++func TestReadChunkedData_AllocationBound(t *testing.T) {
++	defer zerolog.SetGlobalLevel(zerolog.GlobalLevel())
++	zerolog.SetGlobalLevel(zerolog.Disabled)
++	raw, _ := os.ReadFile(chunkedFixture)
++	runtime.GC()
++	var a, b runtime.MemStats
++	runtime.ReadMemStats(&a)
++	r, err := NewReader(bytes.NewReader(raw))
++	runtime.ReadMemStats(&b)
++	if err != nil {
++		t.Fatal(err)
++	}
++	delta := b.TotalAlloc - a.TotalAlloc
++	t.Logf("allocated %d MB for %d MB output", delta>>20, len(r.b)>>20)
++	if delta > uint64(2*len(r.b)+2*len(raw)) {
++		t.Errorf("allocated %d > bound %d", delta, 2*len(r.b)+2*len(raw))
++	}
++}
+diff --git a/dissect/player.go b/dissect/player.go
+index 402c0c8..1b501c5 100644
+--- a/dissect/player.go
++++ b/dissect/player.go
+@@ -141,7 +141,7 @@ func readPlayer(r *Reader) error {
+ 		TeamIndex: teamIndex,
+ 		Operator:  Operator(op),
+ 		Spawn:     spawn,
+-		DissectID: id,
++		DissectID: bytes.Clone(id), // a copy: a slice of r.b would pin the whole round buffer after Read
+ 		uiID:      uiID,
+ 		slotID:    slotID,
+ 
+diff --git a/dissect/reader.go b/dissect/reader.go
+index dd3db7b..9ab84d7 100644
+--- a/dissect/reader.go
++++ b/dissect/reader.go
+@@ -117,11 +117,16 @@ func (r *Reader) readChunkedData(genericReader io.Reader) error {
+ 	}
+ 	log.Debug().Msg("decompressing data")
+ 	zstdMagic := []byte{0x28, 0xB5, 0x2F, 0xFD}
+-	zstdReader, _ := zstd.NewReader(nil)
++	// Sections are small, so the synchronous decoder is as fast and allocates far less.
++	zstdReader, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
++	if err != nil {
++		return err
++	}
++	defer zstdReader.Close()
+ 	memoryReader := bytes.NewReader(nil)
+ 	patternIndex := 0
+ 	sections := 0
+-	data := make([]byte, 0)
++	data := appendWriter{b: make([]byte, 0, decompressedSizeHint(r.b[r.offset:]))}
+ 	for !errors.Is(err, io.EOF) {
+ 		for patternIndex != 4 {
+ 			b, scanErr := r.Bytes(1)
+@@ -148,14 +153,14 @@ func (r *Reader) readChunkedData(genericReader io.Reader) error {
+ 		if err = zstdReader.Reset(&tempReader); err != nil {
+ 			return err
+ 		}
+-		decompressed, err := io.ReadAll(zstdReader)
+-		if err != nil && !(len(decompressed) > 0 && errors.Is(err, zstd.ErrMagicMismatch)) {
++		// decode straight onto the end of data instead of into a new buffer per section
++		n, err := zstdReader.WriteTo(&data)
++		if err != nil && !(n > 0 && errors.Is(err, zstd.ErrMagicMismatch)) {
+ 			return err
+ 		}
+-		data = append(data, decompressed...)
+ 		r.offset += tempReader.n
+ 	}
+-	r.b = data
++	r.b = data.b
+ 	r.offset = 0
+ 	log.Debug().Int("zstd_sections", sections).Send()
+ 	return nil
+@@ -166,6 +171,7 @@ func (r *Reader) readNonChunkedData(genericReader io.Reader) error {
+ 	if err != nil {
+ 		return err
+ 	}
++	defer zstdReader.Close()
+ 	decompressed, err := io.ReadAll(zstdReader)
+ 	if err != nil && !(len(decompressed) > 0 && errors.Is(err, zstd.ErrMagicMismatch)) {
+ 		return err

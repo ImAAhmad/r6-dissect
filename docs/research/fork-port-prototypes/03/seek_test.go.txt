@@ -1,0 +1,45 @@
+package dissect
+
+import (
+	"io"
+	"testing"
+)
+
+// A Seek whose pattern is absent fails with EOF and leaves the offset at the end of the buffer,
+// as the byte-by-byte walk did.
+func TestSeek_AbsentPatternIsEOF(t *testing.T) {
+	r := &Reader{b: []byte{0x01, 0x02, 0x03, 0x04, 0x05}, offset: 1}
+	if err := r.Seek([]byte{0x09, 0x09}); err != io.EOF {
+		t.Fatalf("want io.EOF, got %v", err)
+	}
+	if r.offset != len(r.b) {
+		t.Fatalf("offset: want %d, got %d", len(r.b), r.offset)
+	}
+}
+
+// The fast path must not change what Seek finds, including where the walk misses an overlapping
+// match (22 22 07: the walk restarts after the second 0x22 and so never sees 22 07).
+func TestSeek_SameResultAsWalk(t *testing.T) {
+	cases := []struct {
+		name       string
+		b, pattern []byte
+		start      int
+		wantErr    error
+		wantOffset int
+	}{
+		{"found", []byte{0, 1, 2, 3, 4}, []byte{2, 3}, 0, nil, 4},
+		{"found at start", []byte{2, 3, 0, 0}, []byte{2, 3}, 0, nil, 2},
+		{"before start is not found", []byte{2, 3, 0, 0, 0}, []byte{2, 3}, 1, io.EOF, 5},
+		{"overlap the walk misses", []byte{0x22, 0x22, 0x07, 0x00}, []byte{0x22, 0x07}, 0, io.EOF, 4},
+		{"offset at end", []byte{1, 2}, []byte{1}, 2, io.EOF, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := &Reader{b: c.b, offset: c.start}
+			err := r.Seek(c.pattern)
+			if err != c.wantErr || r.offset != c.wantOffset {
+				t.Fatalf("got (%v, offset %d), want (%v, offset %d)", err, r.offset, c.wantErr, c.wantOffset)
+			}
+		})
+	}
+}

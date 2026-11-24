@@ -1,0 +1,283 @@
+diff --git a/dissect/player.go b/dissect/player.go
+index 402c0c8..645cd59 100644
+--- a/dissect/player.go
++++ b/dissect/player.go
+@@ -8,10 +8,8 @@ import (
+ )
+ 
+ func readPlayer(r *Reader) error {
+-	idIndicator := []byte{0x33, 0xD8, 0x3D, 0x4F, 0x23}
+-	if r.Header.CodeVersion <= Y7S2 {
+-		idIndicator = []byte{0xE6, 0xF9, 0x7D, 0x86}
+-	}
++	markers := r.playerMarkers()
++	idIndicator := markers.id
+ 	spawnIndicator := []byte{0xAF, 0x98, 0x99, 0xCA}
+ 	profileIDIndicator := []byte{0x8A, 0x50, 0x9B, 0xD0}
+ 	//unknownIndicator := []byte{0x22, 0xEE, 0xD4, 0x45, 0xC8, 0x08} // maybe player appearance?
+@@ -101,7 +99,7 @@ func readPlayer(r *Reader) error {
+ 	// there seems to be more to this, but its a quick fix for atk op swaps for now
+ 	var uiID uint64
+ 	if r.Header.CodeVersion >= Y9S3 {
+-		if err = r.Seek([]byte{0x38, 0xDF, 0xEE, 0x88}); err != nil {
++		if err = r.Seek(markers.uiID); err != nil {
+ 			return err
+ 		}
+ 		if err = r.Skip(13); err != nil {
+diff --git a/dissect/player_markers.go b/dissect/player_markers.go
+new file mode 100644
+index 0000000..905711b
+--- /dev/null
++++ b/dissect/player_markers.go
+@@ -0,0 +1,87 @@
++package dissect
++
++import (
++	"bytes"
++
++	"github.com/rs/zerolog/log"
++)
++
++// playerMarkers are the property tags readPlayer seeks inside a player record.
++type playerMarkers struct {
++	id   []byte // followed by the 4-byte DissectID
++	uiID []byte // Y9S3+: the uiID follows 13 bytes after it
++}
++
++var (
++	// playerMarkersClassic is used by every known build after Y7S2 except 9734089.
++	playerMarkersClassic = playerMarkers{
++		id:   []byte{0x33, 0xD8, 0x3D, 0x4F, 0x23},
++		uiID: []byte{0x38, 0xDF, 0xEE, 0x88},
++	}
++	// playerMarkersY11S2Alpha03 is used by build 9734089, a Y11S2_Alpha03
++	// mid-season patch (June 2026). Builds 9718747 (before it) and 9751808,
++	// 9785623 and 9838928 (Y11S2_Alpha04, after it) use the classic tags.
++	playerMarkersY11S2Alpha03 = playerMarkers{
++		id:   []byte{0x8C, 0x61, 0x1A, 0x75, 0x23},
++		uiID: []byte{0x70, 0xFA, 0xAF, 0x28},
++	}
++	// playerIDMarkerY7S2 is the id tag of Y7S2 and earlier.
++	playerIDMarkerY7S2 = []byte{0xE6, 0xF9, 0x7D, 0x86}
++
++	// knownPlayerMarkers is the detection order. The classic set comes first.
++	knownPlayerMarkers = []playerMarkers{playerMarkersClassic, playerMarkersY11S2Alpha03}
++)
++
++// detectPlayerMarkers returns the player tags that the decompressed round b
++// contains. The build number does not tell which set a build uses (9734089
++// changed both tags and later Y11S2 builds changed them back), so the tags are
++// looked up in the round itself. The id tag (5 bytes) picks the set. The uiID
++// tag of that set is tried first, then the other known uiID tags, so a build
++// that moves only one tag is still read and a stray 4-byte match of another
++// set's uiID tag does not win. ok is false when a tag readPlayer needs is not
++// in b; the classic tag is returned for it, so readPlayer fails the way it did
++// before detection.
++func detectPlayerMarkers(b []byte, codeVersion int) (m playerMarkers, ok bool) {
++	if codeVersion <= Y7S2 {
++		return playerMarkers{id: playerIDMarkerY7S2, uiID: playerMarkersClassic.uiID}, true
++	}
++	m, ok = playerMarkersClassic, true
++	order := knownPlayerMarkers
++	found := false
++	for i, s := range knownPlayerMarkers {
++		if bytes.Contains(b, s.id) {
++			m.id, found = s.id, true
++			order = append([]playerMarkers{s}, knownPlayerMarkers[:i]...)
++			order = append(order, knownPlayerMarkers[i+1:]...)
++			break
++		}
++	}
++	if !found {
++		ok = false
++	}
++	if codeVersion < Y9S3 {
++		return m, ok
++	}
++	for _, s := range order {
++		if bytes.Contains(b, s.uiID) {
++			return playerMarkers{id: m.id, uiID: s.uiID}, ok
++		}
++	}
++	return m, false
++}
++
++// playerMarkers returns the player tags of this round. They are detected on
++// the first call and kept for the rest of the round.
++func (r *Reader) playerMarkers() playerMarkers {
++	if r.markers == nil {
++		m, ok := detectPlayerMarkers(r.b, r.Header.CodeVersion)
++		if !ok {
++			log.Warn().
++				Str("gameVersion", r.Header.GameVersion).
++				Int("codeVersion", r.Header.CodeVersion).
++				Msg("no known player id or uiID tag in this round")
++		}
++		r.markers = &m
++	}
++	return *r.markers
++}
+diff --git a/dissect/player_markers_test.go b/dissect/player_markers_test.go
+new file mode 100644
+index 0000000..90b9c3d
+--- /dev/null
++++ b/dissect/player_markers_test.go
+@@ -0,0 +1,64 @@
++package dissect
++
++import (
++	"bytes"
++	"testing"
++)
++
++// The bytes readPlayer seeks, spelled out so the tests do not depend on the
++// variables under test.
++var (
++	testIDClassic = []byte{0x33, 0xD8, 0x3D, 0x4F, 0x23}
++	testUIClassic = []byte{0x38, 0xDF, 0xEE, 0x88}
++	testIDAlpha03 = []byte{0x8C, 0x61, 0x1A, 0x75, 0x23}
++	testUIAlpha03 = []byte{0x70, 0xFA, 0xAF, 0x28}
++	testIDY7S2    = []byte{0xE6, 0xF9, 0x7D, 0x86}
++)
++
++var testMarkerSlack = bytes.Repeat([]byte{0x11}, 64)
++
++func testRound(parts ...[]byte) []byte {
++	b := append([]byte{}, testMarkerSlack...)
++	for _, p := range parts {
++		b = append(b, p...)
++		b = append(b, testMarkerSlack...)
++	}
++	return b
++}
++
++func TestDetectPlayerMarkers(t *testing.T) {
++	cases := []struct {
++		name        string
++		codeVersion int
++		round       []byte
++		wantID      []byte
++		wantUI      []byte
++		wantOK      bool
++	}{
++		{"Y11S2_Alpha03 9718747 uses the classic tags", 9718747, testRound(testIDClassic, testUIClassic), testIDClassic, testUIClassic, true},
++		{"Y11S2_Alpha03 9734089 uses its own tags", 9734089, testRound(testIDAlpha03, testUIAlpha03), testIDAlpha03, testUIAlpha03, true},
++		{"Y11S2_Alpha04 9785623 reverted to the classic tags", 9785623, testRound(testIDClassic, testUIClassic), testIDClassic, testUIClassic, true},
++		{"Y11S3 9950954 uses the classic tags", 9950954, testRound(testIDClassic, testUIClassic), testIDClassic, testUIClassic, true},
++		{"the bytes decide, not the build number", 9950954, testRound(testIDAlpha03, testUIAlpha03), testIDAlpha03, testUIAlpha03, true},
++		{"the uiID tag is found on its own when only it moved", 9950954, testRound(testIDClassic, testUIAlpha03), testIDClassic, testUIAlpha03, true},
++		{"the uiID tag of the set the id tag picked wins", 9734089, testRound(testIDAlpha03, testUIClassic, testUIAlpha03), testIDAlpha03, testUIAlpha03, true},
++		{"before Y9S3 there is no uiID to find", Y8S1, testRound(testIDClassic), testIDClassic, testUIClassic, true},
++		{"Y7S2 and earlier keep their own id tag", Y7S2, testRound(testIDClassic), testIDY7S2, testUIClassic, true},
++		{"an unknown id tag falls back to the classic tags", 9950954, testRound(testUIClassic), testIDClassic, testUIClassic, false},
++		{"an unknown uiID tag falls back to the classic tags", 9950954, testRound(testIDClassic), testIDClassic, testUIClassic, false},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			got, ok := detectPlayerMarkers(c.round, c.codeVersion)
++			if !bytes.Equal(got.id, c.wantID) {
++				t.Errorf("id = % X, want % X", got.id, c.wantID)
++			}
++			if !bytes.Equal(got.uiID, c.wantUI) {
++				t.Errorf("uiID = % X, want % X", got.uiID, c.wantUI)
++			}
++			if ok != c.wantOK {
++				t.Errorf("ok = %v, want %v", ok, c.wantOK)
++			}
++		})
++	}
++}
+diff --git a/dissect/player_retag_test.go b/dissect/player_retag_test.go
+new file mode 100644
+index 0000000..2c0c6e5
+--- /dev/null
++++ b/dissect/player_retag_test.go
+@@ -0,0 +1,76 @@
++package dissect
++
++import (
++	"bytes"
++	"encoding/json"
++	"os"
++	"testing"
++)
++
++// readRoundRetagged reads a fixture round. When retag is set, the decompressed
++// round is rewritten the way build 9734089 tagged its player records before
++// the listeners run, so the result shows what readPlayer does on that build.
++func readRoundRetagged(t *testing.T, path string, retag bool) (*Reader, error) {
++	t.Helper()
++	f, err := os.Open(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer f.Close()
++	r, err := NewReader(f)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if retag {
++		if bytes.Contains(r.b, testIDAlpha03) || bytes.Contains(r.b, testUIAlpha03) {
++			t.Fatalf("%s already contains a 9734089 tag", path)
++		}
++		r.b = bytes.ReplaceAll(r.b, testIDClassic, testIDAlpha03)
++		r.b = bytes.ReplaceAll(r.b, testUIClassic, testUIAlpha03)
++		r.Header.CodeVersion = 9734089
++	}
++	return r, r.Read()
++}
++
++func roundJSON(t *testing.T, r *Reader) string {
++	t.Helper()
++	h := r.Header
++	h.CodeVersion = 0
++	b, err := json.Marshal(struct {
++		Header        Header        `json:"header"`
++		MatchFeedback []MatchUpdate `json:"matchFeedback"`
++	}{h, r.MatchFeedback})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return string(b)
++}
++
++// No 9734089 replay is available, so this rewrites real Y11S2_Alpha04 rounds
++// with that build's tags and requires the same output as the original.
++func TestReadPlayer_Y11S2Alpha03Tags(t *testing.T) {
++	for _, path := range []string{
++		"test/data/replays/valid/Y11S2/custom_early_plant.rec",
++		"test/data/replays/valid/Y11S2/custom_solid_snake.rec",
++	} {
++		t.Run(path, func(t *testing.T) {
++			want, err := readRoundRetagged(t, path, false)
++			if !Ok(err) {
++				t.Fatal(err)
++			}
++			got, err := readRoundRetagged(t, path, true)
++			if err != nil {
++				t.Fatalf("Read() = %v, want nil", err)
++			}
++			if len(got.Header.Players) != len(want.Header.Players) {
++				t.Fatalf("players = %d, want %d", len(got.Header.Players), len(want.Header.Players))
++			}
++			if len(got.MatchFeedback) != len(want.MatchFeedback) {
++				t.Fatalf("matchFeedback = %d, want %d", len(got.MatchFeedback), len(want.MatchFeedback))
++			}
++			if g, w := roundJSON(t, got), roundJSON(t, want); g != w {
++				t.Errorf("retagged round differs from the original\n got: %s\nwant: %s", g, w)
++			}
++		})
++	}
++}
+diff --git a/dissect/reader.go b/dissect/reader.go
+index dd3db7b..3d89bb7 100644
+--- a/dissect/reader.go
++++ b/dissect/reader.go
+@@ -33,6 +33,7 @@ type Reader struct {
+ 	defuserRun             defuserRun          // Y10S4+: the plant/disable action the defuser timer currently belongs to
+ 	readPartial            bool                // reads up to the player info packets
+ 	playersRead            int
++	markers                *playerMarkers     // player record tags of this round, see playerMarkers
+ 	lastScoreboardKiller   string             // Y10S4+: player whose scoreboard kill counter increased last, until the next kill packet
+ 	pendingSBIDs           [][4]byte          // Y10S4+: sbIDs in header-entry order for deferred mapping
+ 	readPlayerOrder        []int              // Y10S4+: player indices in readPlayer order

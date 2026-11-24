@@ -26,12 +26,14 @@
 		"teams": [
 			{
 				"name": "YOUR TEAM",
+				"startingScore": 0,
 				"score": 0,
 				"won": false,
 				"role": "Attack"
 			},
 			{
 				"name": "OPPONENTS",
+				"startingScore": 0,
 				"score": 2,
 				"won": true,
 				"winCondition": "KilledOpponents",
@@ -53,7 +55,13 @@
 				"roleImage": 39149215589,
 				"roleName": "ELA",
 				"rolePortrait": 39149215613,
-				"spawn": "1F TV Room, 1F Music Room"
+				"spawn": "1F TV Room, 1F Music Room",
+				"loadout": {
+					"primary": 68967567469,
+					"secondary": 68967567430,
+					"gadget": 133651070282,
+					"ability": 133651070252
+				}
 			},
 			{
 				"id": 2478914071629594230,
@@ -69,7 +77,13 @@
 				"roleImage": 375628889901,
 				"roleName": "AZAMI",
 				"rolePortrait": 378305072064,
-				"spawn": "1F TV Room, 1F Music Room"
+				"spawn": "1F TV Room, 1F Music Room",
+				"loadout": {
+					"primary": 1366019652,
+					"secondary": 34160268720,
+					"gadget": 133651070318,
+					"ability": 375628878643
+				}
 			},
 			{
 				"id": 7413827518290198821,
@@ -85,7 +99,13 @@
 				"roleImage": 183220539138,
 				"roleName": "MOZZIE",
 				"rolePortrait": 174977498152,
-				"spawn": "1F TV Room, 1F Music Room"
+				"spawn": "1F TV Room, 1F Music Room",
+				"loadout": {
+					"primary": 168013421941,
+					"secondary": 168013421977,
+					"gadget": 133651070294,
+					"ability": 184227273319
+				}
 			},
 			{
 				"id": 16377708134349837188,
@@ -101,7 +121,13 @@
 				"roleImage": 1494825833,
 				"roleName": "SMOKE",
 				"rolePortrait": 27880743670,
-				"spawn": "1F TV Room, 1F Music Room"
+				"spawn": "1F TV Room, 1F Music Room",
+				"loadout": {
+					"primary": 1366019508,
+					"secondary": 1366019400,
+					"gadget": 133651070282,
+					"ability": 133651069360
+				}
 			},
 			{
 				"id": 17456111544074548895,
@@ -117,7 +143,13 @@
 				"roleImage": 104189662842,
 				"roleName": "WARDEN",
 				"rolePortrait": 104189662868,
-				"spawn": "1F TV Room, 1F Music Room"
+				"spawn": "1F TV Room, 1F Music Room",
+				"loadout": {
+					"primary": 34160268747,
+					"secondary": 78526932130,
+					"gadget": 133651070294,
+					"ability": 201523838440
+				}
 			},
 			{
 				"id": 17135695547652681161,
@@ -129,7 +161,13 @@
 					"id": 328397386974
 				},
 				"alliance": 0,
-				"spawn": "APC Area"
+				"spawn": "APC Area",
+				"loadout": {
+					"primary": 1366019268,
+					"secondary": 1366019436,
+					"gadget": 133651070288,
+					"ability": 328397387054
+				}
 			},
 			{
 				"id": 7268091374703319803,
@@ -141,7 +179,13 @@
 					"id": 288200867444
 				},
 				"alliance": 0,
-				"spawn": "Side Street"
+				"spawn": "Side Street",
+				"loadout": {
+					"primary": 44316587837,
+					"secondary": 1366019460,
+					"gadget": 133651070312,
+					"ability": 288200867379
+				}
 			},
 			{
 				"id": 13208408804188310900,
@@ -153,7 +197,13 @@
 					"id": 92270642760
 				},
 				"alliance": 0,
-				"spawn": "Side Street"
+				"spawn": "Side Street",
+				"loadout": {
+					"primary": 1366019340,
+					"secondary": 1366019412,
+					"gadget": 133651070288,
+					"ability": 133651069378
+				}
 			},
 			{
 				"id": 218166518535962488,
@@ -165,7 +215,13 @@
 					"id": 161289666248
 				},
 				"alliance": 0,
-				"spawn": "Side Street"
+				"spawn": "Side Street",
+				"loadout": {
+					"primary": 161289761758,
+					"secondary": 38581443676,
+					"gadget": 133651070288,
+					"ability": 161289666146
+				}
 			},
 			{
 				"id": 7618074269752155582,
@@ -177,7 +233,13 @@
 					"id": 104189663920
 				},
 				"alliance": 0,
-				"spawn": "APC Area"
+				"spawn": "APC Area",
+				"loadout": {
+					"primary": 202492079847,
+					"secondary": 139558932060,
+					"gadget": 133651070240,
+					"ability": 201523838458
+				}
 			}
 		],
 		"gmSettings": [
@@ -196,6 +258,8 @@
 			},
 			"time": "0:00",
 			"timeInSeconds": 0,
+			"phase": "Prep",
+			"elapsedSeconds": -38,
 			"message": "Friendly Fire turned off until Action Phase"
 		},
 		{
@@ -205,7 +269,9 @@
 			},
 			"username": "Knoblauch.SOOS",
 			"time": "0:38",
-			"timeInSeconds": 38
+			"timeInSeconds": 38,
+			"phase": "Prep",
+			"elapsedSeconds": -38
 		},
 		{
 			"type": {
@@ -215,6 +281,8 @@
 			"username": "Knoblauch.SOOS",
 			"time": "0:14",
 			"timeInSeconds": 14,
+			"phase": "Prep",
+			"elapsedSeconds": -14,
 			"operator": {
 				"name": "Flores",
 				"id": 328397386974
@@ -227,6 +295,8 @@
 			},
 			"time": "2:59",
 			"timeInSeconds": 179,
+			"phase": "Action",
+			"elapsedSeconds": 0,
 			"message": "Friendly Fire is now active"
 		},
 		{
@@ -238,7 +308,11 @@
 			"target": "Clampett_",
 			"headshot": false,
 			"time": "2:34",
-			"timeInSeconds": 154
+			"timeInSeconds": 154,
+			"phase": "Action",
+			"elapsedSeconds": 25,
+			"weaponID": 1366019400,
+			"weaponSlot": "secondary"
 		},
 		{
 			"type": {
@@ -249,7 +323,11 @@
 			"target": "A-._",
 			"headshot": false,
 			"time": "2:28",
-			"timeInSeconds": 148
+			"timeInSeconds": 148,
+			"phase": "Action",
+			"elapsedSeconds": 31,
+			"weaponID": 202492079847,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -260,7 +338,11 @@
 			"target": "itsrafaelgotu",
 			"headshot": false,
 			"time": "2:17",
-			"timeInSeconds": 137
+			"timeInSeconds": 137,
+			"phase": "Action",
+			"elapsedSeconds": 42,
+			"weaponID": 1366019652,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -271,7 +353,11 @@
 			"target": "hello182",
 			"headshot": true,
 			"time": "2:16",
-			"timeInSeconds": 136
+			"timeInSeconds": 136,
+			"phase": "Action",
+			"elapsedSeconds": 43,
+			"weaponID": 161289761758,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -282,7 +368,11 @@
 			"target": "SCP-31870",
 			"headshot": true,
 			"time": "2:06",
-			"timeInSeconds": 126
+			"timeInSeconds": 126,
+			"phase": "Action",
+			"elapsedSeconds": 53,
+			"weaponID": 161289761758,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -293,7 +383,11 @@
 			"target": "Erdnuss.SOOS",
 			"headshot": false,
 			"time": "2:05",
-			"timeInSeconds": 125
+			"timeInSeconds": 125,
+			"phase": "Action",
+			"elapsedSeconds": 54,
+			"weaponID": 68967567430,
+			"weaponSlot": "secondary"
 		},
 		{
 			"type": {
@@ -304,7 +398,11 @@
 			"target": "gbarna.djk",
 			"headshot": false,
 			"time": "1:11",
-			"timeInSeconds": 71
+			"timeInSeconds": 71,
+			"phase": "Action",
+			"elapsedSeconds": 108,
+			"weaponID": 133651070294,
+			"weaponSlot": "gadget"
 		},
 		{
 			"type": {
@@ -315,7 +413,11 @@
 			"target": "Knoblauch.SOOS",
 			"headshot": true,
 			"time": "0:30",
-			"timeInSeconds": 30
+			"timeInSeconds": 30,
+			"phase": "Action",
+			"elapsedSeconds": 149,
+			"weaponID": 168013421941,
+			"weaponSlot": "primary"
 		}
 	]
 }

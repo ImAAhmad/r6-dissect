@@ -27,4 +27,9 @@ const (
 	Y10S3_1     int = 9211553
 	Y10S4       int = 9394857
 	Y11S1       int = 9578674
+	Y11S2       int = 9838928
+	// Y11S2 above is a late Y11S2_Alpha04 build, not the first Y11S2 build.
+	// Known Y11S2 builds: 9718747 and 9734089 (Y11S2_Alpha03), 9751808, 9785623
+	// and 9838928 (Y11S2_Alpha04). 9734089 used other player record tags; they
+	// are detected per round (see detectPlayerMarkers), not gated here.
 )

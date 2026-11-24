@@ -1,0 +1,76 @@
+package dissect
+
+import (
+	"bytes"
+	"os"
+	"reflect"
+	"testing"
+)
+
+const failureFixture = "test/data/replays/valid/Y11S2/custom_early_plant.rec"
+
+var (
+	clockPattern  = []byte{0x1F, 0x07, 0xEF, 0xC9}       // readTime, Y8S1+
+	playerPattern = []byte{0x22, 0x07, 0x94, 0x9B, 0xDC} // readPlayer
+	// absentPattern occurs in no fixture, so a Seek for it runs to EOF.
+	absentPattern = []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x03, 0x03, 0x03, 0x03, 0xFE, 0xED}
+)
+
+// seekAbsent is a listener whose Seek always runs to EOF, like a listener whose marker moved.
+func seekAbsent(r *Reader) error { return r.Seek(absentPattern) }
+
+func openFixture(t *testing.T, path string) *Reader {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	r, err := NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(r.b, absentPattern) {
+		t.Fatalf("%s contains absentPattern; pick another", path)
+	}
+	return r
+}
+
+// One listener hits EOF halfway through the round. Everything the other listeners read,
+// before and after that point, and the end-of-round work, must be the same as a clean read.
+func TestRead_ListenerEOFDoesNotStopRound(t *testing.T) {
+	clean := openFixture(t, failureFixture)
+	ticks := 0
+	clean.Listen(clockPattern, func(*Reader) error { ticks++; return nil })
+	if err := clean.Read(); err != nil {
+		t.Fatalf("clean Read: %v", err)
+	}
+
+	faulted := openFixture(t, failureFixture)
+	calls := 0
+	faulted.Listen(clockPattern, func(r *Reader) error {
+		calls++
+		if calls == ticks/2 {
+			return r.Seek(absentPattern)
+		}
+		return nil
+	})
+	err := faulted.Read()
+	if err != nil {
+		t.Fatalf("Read returned %v; a listener failure must not fail the round", err)
+	}
+	if !reflect.DeepEqual(faulted.MatchFeedback, clean.MatchFeedback) {
+		t.Fatalf("matchFeedback differs: got %d events, want %d", len(faulted.MatchFeedback), len(clean.MatchFeedback))
+	}
+	if !reflect.DeepEqual(faulted.Header, clean.Header) {
+		t.Fatalf("header differs (teams won: got %v/%v, want %v/%v)",
+			faulted.Header.Teams[0].Won, faulted.Header.Teams[1].Won, clean.Header.Teams[0].Won, clean.Header.Teams[1].Won)
+	}
+	if !reflect.DeepEqual(faulted.Scoreboard, clean.Scoreboard) {
+		t.Fatal("scoreboard differs")
+	}
+	if faulted.b != nil {
+		t.Fatal("Read did not finish: the buffer was not released")
+	}
+}
+

@@ -1,0 +1,161 @@
+diff --git a/dissect/reader.go b/dissect/reader.go
+index dd3db7b..4eed33e 100644
+--- a/dissect/reader.go
++++ b/dissect/reader.go
+@@ -3,12 +3,13 @@ package dissect
+ import (
+ 	"bufio"
+ 	"bytes"
++	"cmp"
+ 	"encoding/binary"
+ 	"errors"
+ 	"io"
+ 	"math"
+ 	"runtime"
+-	"sort"
++	"slices"
+ 	"sync"
+ 
+ 	"github.com/klauspost/compress/zstd"
+@@ -180,95 +181,67 @@ func (r *Reader) readNonChunkedData(genericReader io.Reader) error {
+ }
+ 
+ type match struct {
+-	offset        int
+-	listenerIndex int
++	offset        int // index of the last byte of the pattern; listeners start at offset+1
++	listenerIndex int // index into r.queries / r.listeners
+ }
+ 
+-func (r *Reader) worker(start int, end int, wg *sync.WaitGroup, matches chan<- match) {
+-	defer wg.Done()
+-	// indexes[j] is the number of bytes of query j matched so far. Only queries
+-	// with a partial match (active) or whose first byte matches the current byte
+-	// are compared, which is equivalent to comparing every query at every byte.
+-	indexes := make([]int, len(r.queries))
+-	var startsWith [256][]int
++// findQueries returns every occurrence of every query in r.b[start:end],
++// ordered by offset and then by listener index (registration order).
++//
++// Each query is searched for independently with bytes.Index over the whole
++// range, so an occurrence is never lost to a block split or to a partial
++// match of the same query that started a few bytes earlier. After an
++// occurrence the search resumes past its last byte, so occurrences of one
++// query never overlap (the old scanner behaved the same way after a
++// completed match).
++func (r *Reader) findQueries(start, end int) []match {
++	if start < 0 || end > len(r.b) || start >= end {
++		return nil
++	}
++	b := r.b[start:end]
++	found := make([][]match, len(r.queries))
++	var wg sync.WaitGroup
+ 	for j, query := range r.queries {
+-		startsWith[query[0]] = append(startsWith[query[0]], j)
+-	}
+-	active := make([]int, 0, len(r.queries))
+-	next := make([]int, 0, len(r.queries))
+-	started := make([]int, 0, len(r.queries))
+-	log.Debug().Int("start", start).Int("end", end).Msg("worker")
+-	for i := start; i <= end; i++ {
+-		c := r.b[i]
+-		started = started[:0]
+-		for _, j := range startsWith[c] {
+-			if indexes[j] == 0 {
+-				started = append(started, j)
+-			}
++		if len(query) == 0 {
++			continue
+ 		}
+-		next = next[:0]
+-		for _, j := range active {
+-			query := r.queries[j]
+-			if c == query[indexes[j]] {
+-				indexes[j]++
+-				if indexes[j] == len(query) {
+-					indexes[j] = 0
+-					matches <- match{i, j}
+-				} else {
+-					next = append(next, j)
++		wg.Add(1)
++		go func(j int, query []byte) {
++			defer wg.Done()
++			var out []match
++			for i := 0; i <= len(b)-len(query); {
++				k := bytes.Index(b[i:], query)
++				if k < 0 {
++					break
+ 				}
+-			} else {
+-				indexes[j] = 0
+-			}
+-		}
+-		for _, j := range started {
+-			if len(r.queries[j]) == 1 {
+-				matches <- match{i, j}
+-				continue
++				i += k + len(query)
++				out = append(out, match{offset: start + i - 1, listenerIndex: j})
+ 			}
+-			indexes[j] = 1
+-			next = append(next, j)
+-		}
+-		active, next = next, active
++			found[j] = out
++		}(j, query)
+ 	}
++	wg.Wait()
++	n := 0
++	for _, f := range found {
++		n += len(f)
++	}
++	matches := make([]match, 0, n)
++	for _, f := range found {
++		matches = append(matches, f...)
++	}
++	slices.SortFunc(matches, func(a, b match) int {
++		return cmp.Or(cmp.Compare(a.offset, b.offset), cmp.Compare(a.listenerIndex, b.listenerIndex))
++	})
++	return matches
+ }
+ 
+ // Read continues reading the replay past the header until the EOF.
+ func (r *Reader) Read() (err error) {
+-	numWorkers := 5
+-	var wg sync.WaitGroup
+-	channel := make(chan match, 300)
+-	start := r.offset
+ 	end := len(r.b)
+ 	if r.readPartial {
+ 		end /= 3
+ 	}
+-	blockSize := int(math.Floor(float64(end-start) / float64(numWorkers)))
+-	log.Debug().Int("workers", numWorkers).Int("blockSize", blockSize).Send()
+-	wg.Add(numWorkers)
+-	for i := 0; i < numWorkers; i++ {
+-		blockStart := r.offset + (i * blockSize)
+-		blockEnd := blockStart + blockSize
+-		if i > 0 {
+-			blockStart += 1
+-		}
+-		if i == numWorkers-1 {
+-			blockEnd = end - 1
+-		}
+-		go r.worker(blockStart, blockEnd, &wg, channel)
+-	}
+-	go func() {
+-		wg.Wait()
+-		close(channel)
+-	}()
+-	matches := make([]match, 0)
+-	log.Debug().Msg("reading from channel")
+-	for match := range channel {
+-		matches = append(matches, match)
+-	}
+-	sort.Slice(matches, func(i, j int) bool {
+-		return matches[i].offset < matches[j].offset
+-	})
++	matches := r.findQueries(r.offset, end)
+ 	log.Debug().Int("matches", len(matches)).Msg("calling listeners")
+ 	for _, entry := range matches {
+ 		for _, listener := range r.listeners[entry.listenerIndex] {

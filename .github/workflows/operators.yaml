@@ -1,0 +1,25 @@
+name: Operators
+
+# Compares our operator list with Ubisoft's website. New operators are released every season,
+# so this runs on a schedule instead of blocking unrelated pull requests.
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  operators:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Compare operators with Ubisoft
+        env:
+          R6_DISSECT_NETWORK_TESTS: "1"
+        run: go test -v -run 'Test_operators' ./dissect/test/

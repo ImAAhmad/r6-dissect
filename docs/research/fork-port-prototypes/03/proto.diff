@@ -1,0 +1,154 @@
+diff --git a/dissect/match.go b/dissect/match.go
+index 5344a17..b44c54f 100644
+--- a/dissect/match.go
++++ b/dissect/match.go
+@@ -280,6 +280,7 @@ func (m *MatchReader) Data() any {
+ 		Header
+ 		MatchFeedback []MatchUpdate      `json:"matchFeedback"`
+ 		PlayerStats   []PlayerRoundStats `json:"stats"`
++		Warnings      []ReadWarning      `json:"warnings,omitempty"`
+ 	}
+ 	type output struct {
+ 		Rounds      []round            `json:"rounds"`
+@@ -291,6 +292,7 @@ func (m *MatchReader) Data() any {
+ 			Header:        r.Header,
+ 			MatchFeedback: r.MatchFeedback,
+ 			PlayerStats:   r.PlayerStats(),
++			Warnings:      r.Warnings,
+ 		})
+ 	}
+ 	return output{
+diff --git a/dissect/reader.go b/dissect/reader.go
+index dd3db7b..239a4e0 100644
+--- a/dissect/reader.go
++++ b/dissect/reader.go
+@@ -5,6 +5,7 @@ import (
+ 	"bytes"
+ 	"encoding/binary"
+ 	"errors"
++	"fmt"
+ 	"io"
+ 	"math"
+ 	"runtime"
+@@ -46,6 +47,7 @@ type Reader struct {
+ 	Header                 Header             `json:"header"`
+ 	MatchFeedback          []MatchUpdate      `json:"matchFeedback"`
+ 	Scoreboard             Scoreboard
++	Warnings               []ReadWarning `json:"warnings,omitempty"`
+ }
+ 
+ // NewReader decompresses in using zstd and
+@@ -234,7 +236,7 @@ func (r *Reader) worker(start int, end int, wg *sync.WaitGroup, matches chan<- m
+ }
+ 
+ // Read continues reading the replay past the header until the EOF.
+-func (r *Reader) Read() (err error) {
++func (r *Reader) Read() error {
+ 	numWorkers := 5
+ 	var wg sync.WaitGroup
+ 	channel := make(chan match, 300)
+@@ -274,8 +276,8 @@ func (r *Reader) Read() (err error) {
+ 		for _, listener := range r.listeners[entry.listenerIndex] {
+ 			r.offset = entry.offset + 1
+ 			n := len(r.MatchFeedback)
+-			if err = listener(r); err != nil {
+-				return
++			if lerr := listener(r); lerr != nil {
++				r.listenerFailed(entry.listenerIndex, listener, entry.offset, lerr)
+ 			}
+ 			r.stampNew(n)
+ 		}
+@@ -290,7 +292,7 @@ func (r *Reader) Read() (err error) {
+ 		r.applyLoadouts()
+ 	}
+ 	r.b = nil
+-	return err
++	return nil
+ }
+ 
+ // ReadPartial continues reading the replay past the header until the full player list is read.
+@@ -321,18 +323,20 @@ func (r *Reader) Listen(pattern []byte, callback func(r *Reader) error) {
+ // Seek skips through the replay until the pattern is found.
+ func (r *Reader) Seek(pattern []byte) error {
+ 	start := r.offset
++	// bytes.Index finds every match the byte walk below can find, so when it finds none the walk
++	// would only run to EOF. Failing here keeps a missing marker from costing a byte-by-byte scan
++	// of the rest of the round (about 0.6 s on a 165 MB round) every time a listener hits it.
++	if start < len(r.b) && bytes.Index(r.b[start:], pattern) < 0 {
++		r.offset = len(r.b)
++		logLargeSeek(start, r.offset, pattern)
++		return io.EOF
++	}
+ 	i := 0
+ 	for {
+ 		b, err := r.Bytes(1)
+ 		if err != nil {
+ 			if Ok(err) {
+-				pc, _, _, ok := runtime.Caller(1)
+-				details := runtime.FuncForPC(pc)
+-				if ok && details != nil {
+-					log.Warn().Int("bytes", r.offset-start).Interface("func", details.Name()).Msg("large seek")
+-				} else {
+-					log.Warn().Int("bytes", r.offset-start).Msg("large seek")
+-				}
++				logLargeSeek(start, r.offset, pattern)
+ 			}
+ 			return err
+ 		}
+@@ -347,6 +351,18 @@ func (r *Reader) Seek(pattern []byte) error {
+ 	}
+ }
+ 
++// logLargeSeek warns that a Seek, called by a listener, ran from start to EOF without a match.
++func logLargeSeek(start, end int, pattern []byte) {
++	e := log.Warn().Int("bytes", end-start).Str("pattern", fmt.Sprintf("% X", pattern))
++	// 0 is logLargeSeek, 1 is Seek, 2 is the function that called Seek
++	if pc, _, _, ok := runtime.Caller(2); ok {
++		if details := runtime.FuncForPC(pc); details != nil {
++			e = e.Interface("func", details.Name())
++		}
++	}
++	e.Msg("large seek")
++}
++
+ // Skip increases the replay offset by n bytes.
+ func (r *Reader) Skip(n int) error {
+ 	r.offset += n
+diff --git a/exports/exports.go b/exports/exports.go
+index 85c252e..01a4a99 100644
+--- a/exports/exports.go
++++ b/exports/exports.go
+@@ -82,11 +82,13 @@ func dissect_read(input *C.char) *C.char {
+ 			dissect.Header
+ 			MatchFeedback []dissect.MatchUpdate      `json:"matchFeedback"`
+ 			PlayerStats   []dissect.PlayerRoundStats `json:"stats"`
++			Warnings      []dissect.ReadWarning      `json:"warnings,omitempty"`
+ 		}
+ 		res := convertForExport(round{
+ 			r.Header,
+ 			r.MatchFeedback,
+ 			r.PlayerStats(),
++			r.Warnings,
+ 		})
+ 		return C.CString(res)
+ 	}
+diff --git a/main.go b/main.go
+index 951e9c7..2ecc18b 100644
+--- a/main.go
++++ b/main.go
+@@ -166,6 +166,7 @@ func writeRound(in io.Reader, out io.Writer) error {
+ 		dissect.Header
+ 		MatchFeedback []dissect.MatchUpdate      `json:"matchFeedback"`
+ 		PlayerStats   []dissect.PlayerRoundStats `json:"stats"`
++		Warnings      []dissect.ReadWarning      `json:"warnings,omitempty"`
+ 	}
+ 	if err := r.Read(); !dissect.Ok(err) {
+ 		return err
+@@ -175,6 +176,7 @@ func writeRound(in io.Reader, out io.Writer) error {
+ 		r.Header,
+ 		r.MatchFeedback,
+ 		r.PlayerStats(),
++		r.Warnings,
+ 	})
+ }
+ 

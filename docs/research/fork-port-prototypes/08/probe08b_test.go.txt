@@ -1,0 +1,36 @@
+package dissect
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/rs/zerolog"
+)
+
+func TestProbe08b(t *testing.T) {
+	files := os.Getenv("PROBE08B_FILES")
+	if files == "" {
+		t.Skip()
+	}
+	zerolog.SetGlobalLevel(zerolog.Disabled)
+	for _, f := range strings.Split(files, ":") {
+		fh, _ := os.Open(f)
+		r, err := NewReader(fh)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hp := []string{}
+		for _, p := range r.Header.Players {
+			hp = append(hp, fmt.Sprintf("%s/t%d", p.Username, p.TeamIndex))
+		}
+		probeReads = nil
+		err = r.Read()
+		fh.Close()
+		fmt.Printf("FILE %s\n  header players (%d): %s\n", f[len(f)-40:], len(hp), strings.Join(hp, " "))
+		for _, pr := range probeReads {
+			fmt.Printf("  read#%d %s found=%v afterDerive=%v op=%d\n", pr.n, pr.username, pr.found, pr.afterDerive, pr.op)
+		}
+	}
+}

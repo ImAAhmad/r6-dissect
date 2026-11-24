@@ -1,0 +1,83 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/redraskal/r6-dissect/dissect"
+
+	"github.com/rs/zerolog"
+)
+
+func TestMain(m *testing.M) {
+	zerolog.SetGlobalLevel(zerolog.Disabled)
+	os.Exit(m.Run())
+}
+
+const fixtureRound = "dissect/test/data/replays/valid/Y11S2/custom_early_plant.rec"
+
+func openMatchFolder(t *testing.T, files map[string][]byte) *os.File {
+	t.Helper()
+	dir := t.TempDir()
+	for name, b := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+func TestWriteMatch_SkipsEmptyRoundFile(t *testing.T) {
+	good, err := os.ReadFile(fixtureRound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := writeMatch(openMatchFolder(t, map[string][]byte{"R01.rec": good, "R02.rec": {}}), JSON, &out); err != nil {
+		t.Fatalf("writeMatch(): %v", err)
+	}
+	var got struct {
+		Rounds        []json.RawMessage `json:"rounds"`
+		SkippedRounds []struct {
+			File string `json:"file"`
+		} `json:"skippedRounds"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rounds) != 1 || len(got.SkippedRounds) != 1 || got.SkippedRounds[0].File != "R02.rec" {
+		t.Errorf("got %d rounds and skippedRounds %+v, want 1 round and R02.rec skipped", len(got.Rounds), got.SkippedRounds)
+	}
+}
+
+func TestWriteMatch_FailsWhenNoRoundIsReadable(t *testing.T) {
+	var out bytes.Buffer
+	err := writeMatch(openMatchFolder(t, map[string][]byte{"R01.rec": {}, "R02.rec": {}}), JSON, &out)
+	if err == nil {
+		t.Fatal("writeMatch(): want an error, got nil")
+	}
+	if out.Len() != 0 {
+		t.Errorf("wrote %d bytes, want none", out.Len())
+	}
+}
+
+func TestPrintHead_EmptyFirstRoundFile(t *testing.T) {
+	good, err := os.ReadFile(fixtureRound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = printHead(openMatchFolder(t, map[string][]byte{"R01.rec": {}, "R02.rec": good}))
+	var re *dissect.RoundError
+	if !errors.As(err, &re) {
+		t.Fatalf("printHead() = %v, want a *dissect.RoundError", err)
+	}
+}

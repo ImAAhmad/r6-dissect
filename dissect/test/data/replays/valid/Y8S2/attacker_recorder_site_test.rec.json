@@ -26,12 +26,14 @@
 		"teams": [
 			{
 				"name": "YOUR TEAM",
+				"startingScore": 0,
 				"score": 0,
 				"won": false,
 				"role": "Attack"
 			},
 			{
 				"name": "OPPONENTS",
+				"startingScore": 0,
 				"score": 1,
 				"won": true,
 				"winCondition": "KilledOpponents",
@@ -53,7 +55,13 @@
 				"roleImage": 1494825830,
 				"roleName": "MUTE",
 				"rolePortrait": 27880706844,
-				"spawn": "B Wine Cellar, B Snowmobile Garage"
+				"spawn": "B Wine Cellar, B Snowmobile Garage",
+				"loadout": {
+					"primary": 1366019508,
+					"secondary": 1366019400,
+					"gadget": 133651070294,
+					"ability": 133651069336
+				}
 			},
 			{
 				"id": 10632438829929311542,
@@ -69,7 +77,13 @@
 				"roleImage": 39149215445,
 				"roleName": "MIRA",
 				"rolePortrait": 39149215469,
-				"spawn": "B Wine Cellar, B Snowmobile Garage"
+				"spawn": "B Wine Cellar, B Snowmobile Garage",
+				"loadout": {
+					"primary": 44316587819,
+					"secondary": 39149216440,
+					"gadget": 133651070294,
+					"ability": 133651069324
+				}
 			},
 			{
 				"id": 17562023222300049391,
@@ -85,7 +99,13 @@
 				"roleImage": 390305247296,
 				"roleName": "SOLIS",
 				"rolePortrait": 374667788145,
-				"spawn": "B Wine Cellar, B Snowmobile Garage"
+				"spawn": "B Wine Cellar, B Snowmobile Garage",
+				"loadout": {
+					"primary": 1366019628,
+					"secondary": 1366019400,
+					"gadget": 133651070318,
+					"ability": 391752121072
+				}
 			},
 			{
 				"id": 11270071239941990922,
@@ -101,7 +121,13 @@
 				"roleImage": 104189662842,
 				"roleName": "WARDEN",
 				"rolePortrait": 104189662868,
-				"spawn": "B Wine Cellar, B Snowmobile Garage"
+				"spawn": "B Wine Cellar, B Snowmobile Garage",
+				"loadout": {
+					"primary": 34160268747,
+					"secondary": 78526932130,
+					"gadget": 133651070294,
+					"ability": 201523838440
+				}
 			},
 			{
 				"id": 5031908513475985408,
@@ -113,7 +139,13 @@
 					"id": 174977508808
 				},
 				"alliance": 0,
-				"spawn": "Cliffside"
+				"spawn": "Cliffside",
+				"loadout": {
+					"primary": 168013421923,
+					"secondary": 139558931725,
+					"gadget": 133651070312,
+					"ability": 188410281800
+				}
 			},
 			{
 				"id": 5031908513475985408,
@@ -125,7 +157,13 @@
 					"id": 104189663024
 				},
 				"alliance": 0,
-				"spawn": "Cliffside"
+				"spawn": "Cliffside",
+				"loadout": {
+					"primary": 1366019988,
+					"secondary": 34160268720,
+					"gadget": 387197346354,
+					"ability": 201523838434
+				}
 			},
 			{
 				"id": 5031908513475985408,
@@ -137,7 +175,13 @@
 					"id": 92270642032
 				},
 				"alliance": 0,
-				"spawn": "Lakeside"
+				"spawn": "Lakeside",
+				"loadout": {
+					"primary": 1366019220,
+					"secondary": 1366019460,
+					"gadget": 263047965420,
+					"ability": 133651069264
+				}
 			},
 			{
 				"id": 5031908513475985408,
@@ -149,7 +193,13 @@
 					"id": 104189664390
 				},
 				"alliance": 0,
-				"spawn": "Cliffside"
+				"spawn": "Cliffside",
+				"loadout": {
+					"primary": 1366019220,
+					"secondary": 1366019472,
+					"gadget": 133651070240,
+					"ability": 201523838482
+				}
 			},
 			{
 				"id": 5031908513475985408,
@@ -161,7 +211,13 @@
 					"id": 92270642578
 				},
 				"alliance": 0,
-				"spawn": "RANDOM"
+				"spawn": "RANDOM",
+				"loadout": {
+					"primary": 1366019232,
+					"secondary": 1366019496,
+					"gadget": 133651070306,
+					"ability": 133651069282
+				}
 			},
 			{
 				"id": 5031908513475985408,
@@ -173,7 +229,13 @@
 					"id": 104189664155
 				},
 				"alliance": 0,
-				"spawn": "B Wine Cellar, B Snowmobile Garage"
+				"spawn": "B Wine Cellar, B Snowmobile Garage",
+				"loadout": {
+					"primary": 53995319912,
+					"secondary": 127174503972,
+					"gadget": 127363389074,
+					"ability": 201523838476
+				}
 			}
 		],
 		"gmSettings": [
@@ -192,6 +254,8 @@
 			},
 			"time": "0:00",
 			"timeInSeconds": 0,
+			"phase": "Prep",
+			"elapsedSeconds": -34,
 			"message": "Friendly Fire turned off until Action Phase"
 		},
 		{
@@ -201,7 +265,9 @@
 			},
 			"username": "Melon_.-",
 			"time": "0:34",
-			"timeInSeconds": 34
+			"timeInSeconds": 34,
+			"phase": "Prep",
+			"elapsedSeconds": -34
 		},
 		{
 			"type": {
@@ -210,6 +276,8 @@
 			},
 			"time": "2:59",
 			"timeInSeconds": 179,
+			"phase": "Action",
+			"elapsedSeconds": 0,
 			"message": "Friendly Fire is now active"
 		},
 		{
@@ -221,7 +289,11 @@
 			"target": "BlackTakis69",
 			"headshot": true,
 			"time": "2:27",
-			"timeInSeconds": 147
+			"timeInSeconds": 147,
+			"phase": "Action",
+			"elapsedSeconds": 32,
+			"weaponID": 1366019628,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -232,7 +304,11 @@
 			"target": "FORIIEGNER",
 			"headshot": true,
 			"time": "2:21",
-			"timeInSeconds": 141
+			"timeInSeconds": 141,
+			"phase": "Action",
+			"elapsedSeconds": 38,
+			"weaponID": 1366019628,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -243,7 +319,11 @@
 			"target": "redraskal",
 			"headshot": true,
 			"time": "2:18",
-			"timeInSeconds": 138
+			"timeInSeconds": 138,
+			"phase": "Action",
+			"elapsedSeconds": 41,
+			"weaponID": 34160268747,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -254,7 +334,12 @@
 			"target": "weasil4211",
 			"headshot": false,
 			"time": "2:18",
-			"timeInSeconds": 138
+			"timeInSeconds": 138,
+			"phase": "Action",
+			"elapsedSeconds": 41,
+			"teamKill": true,
+			"weaponID": 133651070294,
+			"weaponSlot": "gadget"
 		},
 		{
 			"type": {
@@ -263,6 +348,8 @@
 			},
 			"time": "2:18",
 			"timeInSeconds": 138,
+			"phase": "Action",
+			"elapsedSeconds": 41,
 			"message": "Reverse Friendly Fire has been activated for IllIIllIlIlIll"
 		},
 		{
@@ -272,6 +359,8 @@
 			},
 			"time": "2:10",
 			"timeInSeconds": 130,
+			"phase": "Action",
+			"elapsedSeconds": 49,
 			"message": "Reverse Friendly Fire has been deactivated for IllIIllIlIlIll"
 		},
 		{
@@ -283,7 +372,11 @@
 			"target": "Shives007",
 			"headshot": false,
 			"time": "1:22",
-			"timeInSeconds": 82
+			"timeInSeconds": 82,
+			"phase": "Action",
+			"elapsedSeconds": 97,
+			"weaponID": 1366019400,
+			"weaponSlot": "secondary"
 		},
 		{
 			"type": {
@@ -294,7 +387,11 @@
 			"target": "Mr.Cuhh",
 			"headshot": true,
 			"time": "1:19",
-			"timeInSeconds": 79
+			"timeInSeconds": 79,
+			"phase": "Action",
+			"elapsedSeconds": 100,
+			"weaponID": 1366019232,
+			"weaponSlot": "primary"
 		},
 		{
 			"type": {
@@ -305,7 +402,11 @@
 			"target": "Melon_.-",
 			"headshot": false,
 			"time": "1:03",
-			"timeInSeconds": 63
+			"timeInSeconds": 63,
+			"phase": "Action",
+			"elapsedSeconds": 116,
+			"weaponID": 1366019400,
+			"weaponSlot": "secondary"
 		}
 	]
 }

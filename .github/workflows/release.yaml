@@ -5,26 +5,71 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   releases-matrix:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       matrix:
         goos: [linux, windows, darwin]
         goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - shell: bash
         name: Set env variables
         run: |
           c=$(git rev-parse --short HEAD); b=$(git name-rev --name-only "$c"); echo "version=$c ($b branch)" >> $GITHUB_ENV
-          echo "ext=$( if [ '${{ matrix.goos }}' = 'windows' ]; then echo 'dll'; elif [ '${{ matrix.goos }}' = 'darwin' ]; then echo 'dylib'; elif [ '${{ matrix.goos }}' = 'linux' ]; then echo 'so'; fi )" >> $GITHUB_ENV
-      - uses: wangyoucao577/go-release-action@v1.52
+      - uses: wangyoucao577/go-release-action@279495102627de7960cbc33434ab01a12bae144b # v1.55
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           goos: ${{ matrix.goos }}
           goarch: ${{ matrix.goarch }}
-          goversion: "1.23.3"
-          pre_command: "go build -o libr6dissect.${{ env.ext }} -buildmode=c-shared exports/exports.go"
-          extra_files: "LICENSE README.md libr6dissect.h libr6dissect.${{ env.ext }}"
+          goversion: "1.26"
+          extra_files: "LICENSE README.md"
           ldflags: "-X 'main.Version=${{ env.version }}'"
+
+  # The shared library uses cgo, which cannot be cross-compiled without a C toolchain
+  # for the target platform. Build it natively on each OS instead (see #67).
+  shared-library:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-latest, goos: linux, goarch: amd64, ext: so }
+          - { runner: ubuntu-24.04-arm, goos: linux, goarch: arm64, ext: so }
+          - { runner: windows-latest, goos: windows, goarch: amd64, ext: dll }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          name=libr6dissect-${{ matrix.goos }}-${{ matrix.goarch }}
+          go build -buildmode=c-shared -o dist/$name.${{ matrix.ext }} exports/exports.go
+          mv dist/$name.h dist/libr6dissect.h
+          cd dist && tar -czf ../$name.tar.gz *
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: libr6dissect-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: libr6dissect-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+      - name: Upload to release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" libr6dissect-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz --clobber

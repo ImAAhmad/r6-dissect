@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/redraskal/r6-dissect/dissect"
@@ -77,7 +79,6 @@ func setup() {
 	pflag.BoolP("debug", "d", false, "sets log level to debug")
 	pflag.BoolP("dump", "p", false, "dumps decompressed replay to the output")
 	pflag.Bool("info", false, "prints the replay header")
-	pflag.Bool("analyze", false, "includes cheat detection analysis in output")
 	pflag.BoolP("version", "v", false, "prints the version")
 	pflag.Parse()
 	if err := viper.BindPFlags(pflag.CommandLine); err != nil {
@@ -149,14 +150,17 @@ func writeMatch(in *os.File, format OutputFormat, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := m.Read(); !dissect.Ok(err) {
-		return err
+	if err := m.Read(); err != nil {
+		var incomplete *dissect.IncompleteMatchError
+		if !errors.As(err, &incomplete) || len(incomplete.Skipped) == incomplete.Total {
+			return err
+		}
+		for _, s := range incomplete.Skipped {
+			log.Error().Err(s.Err).Str("file", filepath.Base(s.Path)).Msg("round skipped: the file could not be read")
+		}
 	}
 	if format == Excel {
 		return m.WriteExcel(out)
-	}
-	if viper.GetBool("analyze") {
-		return m.WriteJSONWithAnalysis(out)
 	}
 	return m.WriteJSON(out)
 }
@@ -168,39 +172,20 @@ func writeRound(in io.Reader, out io.Writer) error {
 	}
 	type output struct {
 		dissect.Header
-		MatchFeedback      []dissect.MatchUpdate       `json:"matchFeedback"`
-		PlayerStats        []dissect.PlayerRoundStats  `json:"stats"`
-		UtilityEvents      []dissect.UtilityEvent      `json:"utilityEvents,omitempty"`
-		CameraDestructions []dissect.CameraDestruction `json:"cameraDestructions,omitempty"`
-		DroneDestructions  []dissect.DroneDestruction  `json:"droneDestructions,omitempty"`
-		Reinforcements     []dissect.Reinforcement     `json:"reinforcements,omitempty"`
-		Barricades         []dissect.BarricadePlace    `json:"barricades,omitempty"`
-		GadgetDeployments  []dissect.GadgetDeployment  `json:"gadgetDeployments,omitempty"`
-		Movements          []dissect.EntityPositions   `json:"movements,omitempty"`
-		LocationEvents     []dissect.LocationEvent     `json:"locationEvents,omitempty"`
-		Analysis           *dissect.RoundAnalysis      `json:"analysis,omitempty"`
+		MatchFeedback []dissect.MatchUpdate      `json:"matchFeedback"`
+		PlayerStats   []dissect.PlayerRoundStats `json:"stats"`
+		Warnings      []dissect.ReadWarning      `json:"warnings,omitempty"`
 	}
 	if err := r.Read(); !dissect.Ok(err) {
 		return err
 	}
-	o := output{
-		Header:             r.Header,
-		MatchFeedback:      r.MatchFeedback,
-		PlayerStats:        r.PlayerStats(),
-		UtilityEvents:      r.UtilityEvents,
-		CameraDestructions: r.CameraDestructions,
-		DroneDestructions:  r.DroneDestructions,
-		Reinforcements:     r.Reinforcements,
-		Barricades:         r.Barricades,
-		GadgetDeployments:  r.GadgetDeployments,
-		Movements:          r.Movements,
-		LocationEvents:     r.LocationEvents,
-	}
-	if viper.GetBool("analyze") {
-		o.Analysis = dissect.AnalyzeRound(r)
-	}
 	encoder := json.NewEncoder(out)
-	return encoder.Encode(o)
+	return encoder.Encode(output{
+		r.Header,
+		r.MatchFeedback,
+		r.PlayerStats(),
+		r.Warnings,
+	})
 }
 
 func writeRoundDump(in io.Reader, out *os.File) error {

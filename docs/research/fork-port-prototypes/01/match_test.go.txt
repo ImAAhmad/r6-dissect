@@ -1,0 +1,178 @@
+package test
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/redraskal/r6-dissect/dissect"
+)
+
+const (
+	earlyPlant = "data/replays/valid/Y11S2/custom_early_plant.rec" // round 0
+	solidSnake = "data/replays/valid/Y11S2/custom_solid_snake.rec" // round 2
+)
+
+func readFixture(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// matchFolder writes files (name -> content) into a new temp folder and opens it.
+func matchFolder(t *testing.T, files map[string][]byte) *os.File {
+	t.Helper()
+	dir := t.TempDir()
+	for name, b := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
+type matchJSON struct {
+	Rounds []struct {
+		RoundNumber int `json:"roundNumber"`
+	} `json:"rounds"`
+	SkippedRounds []struct {
+		File  string `json:"file"`
+		Index int    `json:"index"`
+		Error string `json:"error"`
+	} `json:"skippedRounds"`
+}
+
+func TestMatchReader_Read_SkipsUnreadableRounds(t *testing.T) {
+	good := readFixture(t, earlyPlant)
+	snake := readFixture(t, solidSnake)
+	cases := []struct {
+		name        string
+		files       map[string][]byte
+		wantRounds  []int    // header roundNumber of the rounds in the JSON, in order
+		wantSkipped []string // file names in skippedRounds, in order
+	}{
+		{"empty last file", map[string][]byte{"R01.rec": good, "R02.rec": {}}, []int{0}, []string{"R02.rec"}},
+		{"empty first file", map[string][]byte{"R01.rec": {}, "R02.rec": good}, []int{0}, []string{"R01.rec"}},
+		{"empty middle file", map[string][]byte{"R01.rec": good, "R02.rec": {}, "R03.rec": snake}, []int{0, 2}, []string{"R02.rec"}},
+		{"header cut short", map[string][]byte{"R01.rec": good, "R02.rec": snake[:2000]}, []int{0}, []string{"R02.rec"}},
+		{"data cut short", map[string][]byte{"R01.rec": good, "R02.rec": snake[:len(snake)/2]}, []int{0}, []string{"R02.rec"}},
+		{"no data after the header", map[string][]byte{"R01.rec": good, "R02.rec": snake[:bytes.Index(snake, []byte{0x28, 0xB5, 0x2F, 0xFD})]}, []int{0}, []string{"R02.rec"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := dissect.NewMatchReader(matchFolder(t, tc.files))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = m.Read()
+			var incomplete *dissect.IncompleteMatchError
+			if !errors.As(err, &incomplete) {
+				t.Fatalf("Read(): want *IncompleteMatchError, got %v", err)
+			}
+			if dissect.Ok(err) {
+				t.Error("Ok(err) = true; an incomplete match must not pass the EOF check")
+			}
+			if incomplete.Total != len(tc.files) {
+				t.Errorf("Total = %d, want %d", incomplete.Total, len(tc.files))
+			}
+			var buf bytes.Buffer
+			if err := m.WriteJSON(&buf); err != nil {
+				t.Fatal(err)
+			}
+			var got matchJSON
+			if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			var gotRounds []int
+			for _, r := range got.Rounds {
+				gotRounds = append(gotRounds, r.RoundNumber)
+			}
+			if !slices.Equal(gotRounds, tc.wantRounds) {
+				t.Errorf("rounds = %v, want %v", gotRounds, tc.wantRounds)
+			}
+			var gotSkipped []string
+			for _, s := range got.SkippedRounds {
+				gotSkipped = append(gotSkipped, s.File)
+				if s.Error == "" {
+					t.Errorf("skippedRounds[%s].error is empty", s.File)
+				}
+			}
+			if !slices.Equal(gotSkipped, tc.wantSkipped) {
+				t.Errorf("skippedRounds = %v, want %v", gotSkipped, tc.wantSkipped)
+			}
+			if err := m.WriteExcel(io.Discard); err != nil {
+				t.Errorf("WriteExcel(): %v", err)
+			}
+		})
+	}
+}
+
+func TestMatchReader_Read_NoReadableRound(t *testing.T) {
+	snake := readFixture(t, solidSnake)
+	m, err := dissect.NewMatchReader(matchFolder(t, map[string][]byte{"R01.rec": {}, "R02.rec": snake[:2000]}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var incomplete *dissect.IncompleteMatchError
+	if err := m.Read(); !errors.As(err, &incomplete) {
+		t.Fatalf("Read(): want *IncompleteMatchError, got %v", err)
+	}
+	if len(incomplete.Skipped) != 2 || incomplete.Total != 2 {
+		t.Errorf("Skipped = %d, Total = %d, want 2 and 2", len(incomplete.Skipped), incomplete.Total)
+	}
+	var re *dissect.RoundError
+	if !errors.As(incomplete.Skipped[0], &re) || filepath.Base(re.Path) != "R01.rec" || !errors.Is(re, io.EOF) {
+		t.Errorf("Skipped[0] = %#v, want a RoundError for R01.rec wrapping io.EOF", incomplete.Skipped[0])
+	}
+}
+
+func TestMatchReader_Read_CompleteMatchHasNoSkippedRounds(t *testing.T) {
+	m, err := dissect.NewMatchReader(matchFolder(t, map[string][]byte{
+		"R01.rec": readFixture(t, earlyPlant),
+		"R02.rec": readFixture(t, solidSnake),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Read(); err != nil {
+		t.Fatalf("Read(): %v", err)
+	}
+	var buf bytes.Buffer
+	if err := m.WriteJSON(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(buf.Bytes(), []byte(`"skippedRounds"`)) {
+		t.Error(`a complete match must not write "skippedRounds"`)
+	}
+}
+
+func TestMatchReader_RoundAt_SkippedRound(t *testing.T) {
+	m, err := dissect.NewMatchReader(matchFolder(t, map[string][]byte{"R01.rec": readFixture(t, earlyPlant), "R02.rec": {}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = m.Read()
+	for range 2 {
+		r, err := m.RoundAt(1)
+		var re *dissect.RoundError
+		if r != nil || !errors.As(err, &re) || re.Index != 1 {
+			t.Fatalf("RoundAt(1) = %v, %v; want nil and a *RoundError with Index 1", r, err)
+		}
+	}
+	if r, err := m.RoundAt(0); r == nil || err != nil {
+		t.Fatalf("RoundAt(0) = %v, %v", r, err)
+	}
+}

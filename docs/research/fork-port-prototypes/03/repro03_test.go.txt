@@ -1,0 +1,239 @@
+package dissect
+
+// Scratch reproduction for fork-port item 03 (listener EOF aborts the rest of the round).
+// Not for commit.
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+)
+
+var repro03Fixtures = []string{
+	"test/data/replays/valid/Y8S1/ranked_1.rec",
+	"test/data/replays/valid/Y9S1/custom_1.rec",
+	"test/data/replays/valid/Y11S2/custom_solid_snake.rec",
+	"test/data/replays/valid/Y11S2/custom_early_plant.rec",
+}
+
+var repro03TimePattern = []byte{0x1F, 0x07, 0xEF, 0xC9}
+
+// a pattern that occurs nowhere in the buffer, so Seek runs to EOF
+var repro03Absent = []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x03, 0x03, 0x03, 0x03, 0xFE, 0xED}
+
+func repro03Open(t *testing.T, path string) *Reader {
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	r, err := NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func repro03Summary(r *Reader) string {
+	kills, other := 0, 0
+	for _, u := range r.MatchFeedback {
+		if u.Type == Kill {
+			kills++
+		} else {
+			other++
+		}
+	}
+	loadouts := 0
+	for _, p := range r.Header.Players {
+		if p.Loadout != nil {
+			loadouts++
+		}
+	}
+	var sbScore uint32
+	for _, p := range r.Scoreboard.Players {
+		sbScore += p.Score
+	}
+	return fmt.Sprintf("players=%d feedback=%d (kills=%d other=%d) won=[%v %v] win=%q/%q site=%q loadouts=%d scoreboardScoreSum=%d",
+		len(r.Header.Players), len(r.MatchFeedback), kills, other,
+		r.Header.Teams[0].Won, r.Header.Teams[1].Won,
+		r.Header.Teams[0].WinCondition, r.Header.Teams[1].WinCondition,
+		r.Header.Site, loadouts, sbScore)
+}
+
+// Scenario 1: one extra listener on the clock pattern does a Seek that runs to EOF at the
+// halfway tick. Everything else in the buffer is intact, so the diff is purely the abort.
+func TestRepro03_ListenerEOFMidRound(t *testing.T) {
+	for _, path := range repro03Fixtures {
+		t.Run(path, func(t *testing.T) {
+			base := repro03Open(t, path)
+			if bytes.Contains(base.b, repro03Absent) {
+				t.Fatal("absent pattern is present")
+			}
+			ticks := 0
+			base.Listen(repro03TimePattern, func(r *Reader) error { ticks++; return nil })
+			baseErr := base.Read()
+			t.Logf("baseline : err=%v %s ticks=%d", baseErr, repro03Summary(base), ticks)
+
+			faulted := repro03Open(t, path)
+			calls, faultOffset := 0, -1
+			faulted.Listen(repro03TimePattern, func(r *Reader) error {
+				calls++
+				if calls != ticks/2 {
+					return nil
+				}
+				faultOffset = r.offset
+				return r.Seek(repro03Absent)
+			})
+			err := faulted.Read()
+			t.Logf("faulted  : err=%v Ok(err)=%v faultAt=%d/%d %s", err, Ok(err), faultOffset, len(base.b)+0, repro03Summary(faulted))
+			t.Logf("buffer released after faulted Read: %v", faulted.b == nil)
+		})
+	}
+}
+
+// Scenario 2 (realistic): a marker that readPlayer seeks is absent after some offset, as when
+// a game build moves it (aa-sasha's Y11S2_Alpha03 incident). We erase every profileID
+// marker (8A 50 9B D0) after the Nth player packet, so that player's Seek runs to EOF.
+func TestRepro03_PlayerMarkerAbsent(t *testing.T) {
+	playerPattern := []byte{0x22, 0x07, 0x94, 0x9B, 0xDC}
+	profile := []byte{0x8A, 0x50, 0x9B, 0xD0}
+	for _, path := range repro03Fixtures {
+		t.Run(path, func(t *testing.T) {
+			base := repro03Open(t, path)
+			var playerOffsets []int
+			for i := 0; ; {
+				j := bytes.Index(base.b[i:], playerPattern)
+				if j < 0 {
+					break
+				}
+				playerOffsets = append(playerOffsets, i+j)
+				i += j + 1
+			}
+			firstKill := bytes.Index(base.b, killIndicator)
+			if len(base.Header.RecordingProfileID) == 0 {
+				t.Skip("no profile ids in this version")
+			}
+			if err := base.Read(); !Ok(err) {
+				t.Fatal(err)
+			}
+			t.Logf("player packets at %v; first kill indicator at %d; buffer %d", playerOffsets, firstKill, len(repro03Open(t, path).b))
+			t.Logf("baseline : %s", repro03Summary(base))
+			// break the last player packet's profile marker and every later one
+			last := playerOffsets[len(playerOffsets)-1]
+			r := repro03Open(t, path)
+			erased := 0
+			for i := last; ; {
+				j := bytes.Index(r.b[i:], profile)
+				if j < 0 {
+					break
+				}
+				r.b[i+j] ^= 0xFF
+				erased++
+				i += j + 1
+			}
+			err := r.Read()
+			t.Logf("faulted  : erased=%d err=%v Ok(err)=%v %s", erased, err, Ok(err), repro03Summary(r))
+		})
+	}
+}
+
+// Scenario 3: the same fault, read through the CLI path (MatchReader on a folder).
+func TestRepro03_MatchReaderSwallows(t *testing.T) {
+	dir := t.TempDir()
+	src := "test/data/replays/valid/Y11S2/"
+	for _, n := range []string{"custom_early_plant.rec", "custom_solid_snake.rec"} {
+		b, err := os.ReadFile(src + n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dir+"/"+n, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	m, err := NewMatchReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fired := false
+	m.Listen(repro03TimePattern, func(r *Reader) error {
+		if fired {
+			return nil
+		}
+		fired = true
+		return r.Seek(repro03Absent)
+	})
+	err = m.Read()
+	t.Logf("MatchReader.Read err=%v Ok(err)=%v rounds=%d nil=[%v %v]", err, Ok(err), m.NumRounds(), m.rounds[0] == nil, m.rounds[1] == nil)
+	defer func() {
+		if p := recover(); p != nil {
+			t.Logf("WriteJSON panicked: %v", p)
+		}
+	}()
+	var buf bytes.Buffer
+	_ = m.WriteJSON(&buf)
+	t.Logf("WriteJSON wrote %d bytes", buf.Len())
+}
+
+func TestRepro03_SeekCost(t *testing.T) {
+	r := repro03Open(t, "test/data/replays/valid/Y8S1/ranked_1.rec")
+	start := time.Now()
+	r.offset = 0
+	err := r.Seek(repro03Absent)
+	el := time.Since(start)
+	start2 := time.Now()
+	idx := bytes.Index(r.b, repro03Absent)
+	el2 := time.Since(start2)
+	t.Logf("buffer=%d MB; full Seek to EOF took %v (err=%v); bytes.Index took %v (idx=%d)", len(r.b)>>20, el, err, el2, idx)
+}
+
+// every replay in REPRO03_LIST: did Read stop early (buffer not released)?
+func TestRepro03_CorpusAborts(t *testing.T) {
+	list, err := os.ReadFile(os.Getenv("REPRO03_LIST"))
+	if err != nil {
+		t.Skip(err)
+	}
+	aborted, total := 0, 0
+	for _, p := range bytes.Split(bytes.TrimSpace(list), []byte("\n")) {
+		f, err := os.Open(string(p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := NewReader(f)
+		f.Close()
+		if err != nil {
+			t.Logf("NewReader %s: %v", p, err)
+			continue
+		}
+		total++
+		err = r.Read()
+		if err != nil || r.b != nil {
+			aborted++
+			t.Logf("ABORT %s: err=%v", p, err)
+		}
+	}
+	t.Logf("aborted %d of %d", aborted, total)
+}
+
+func TestRepro03_WarningShape(t *testing.T) {
+	r := repro03Open(t, "test/data/replays/valid/Y11S2/custom_early_plant.rec")
+	calls := 0
+	r.Listen(repro03TimePattern, func(r *Reader) error {
+		calls++
+		if calls%20 != 0 {
+			return nil
+		}
+		return r.Seek(repro03Absent)
+	})
+	start := time.Now()
+	err := r.Read()
+	b, _ := json.Marshal(r.Warnings)
+	t.Logf("err=%v took=%v warnings=%s", err, time.Since(start), b)
+}
