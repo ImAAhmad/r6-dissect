@@ -124,6 +124,9 @@ const (
 	ConsulateY10       Map = 418126004176
 	FortressY10        Map = 398899676157
 	OregonY11          Map = 434715462383 // modernized in Y11S1 Operation Silent Hunt
+	VillaY11           Map = 409325881472 // new IDs seen in Y11S3 replays
+	CalypsoCasino      Map = 419965653950
+	CoastlineY11       Map = 436375283234
 
 	KilledOpponents  WinCondition = "KilledOpponents"
 	SecuredArea      WinCondition = "SecuredArea" // TODO
