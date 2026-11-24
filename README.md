@@ -4,7 +4,7 @@
 
 Match Replay API/CLI for Rainbow Six: Siege's Dissect (.rec) format.
 
-Supports replays from **Y7S1 through Y11S1** (and counting).
+Supports replays from **Y7S1 through Y11S3** (and counting).
 
 Download the latest version here: https://github.com/redraskal/r6-dissect/releases
 

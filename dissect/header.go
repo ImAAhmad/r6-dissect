@@ -212,6 +212,7 @@ const (
 	Rauora      Operator = 386098331923
 	Denari      Operator = 374667787937
 	SolidSnake  Operator = 444310693746
+	Noor        Operator = 456757346397
 )
 
 // duplicated code here could be avoided by defining a generic function accepting any Number type.
@@ -556,10 +557,10 @@ func (r *Reader) deriveTeamRoles() {
 	}
 	r.Header.Players = players
 	for _, p := range r.Header.Players {
-		if p.Operator == Recruit {
-			continue
-		}
 		role := p.Operator.Role()
+		if p.Operator == Recruit || role == "" {
+			continue // a Recruit or an unknown (newer) operator says nothing about the side
+		}
 		teamIndex := p.TeamIndex
 		oppositeTeamIndex := teamIndex ^ 1
 		if role == Attack {
