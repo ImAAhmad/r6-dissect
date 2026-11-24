@@ -123,6 +123,7 @@ const (
 	NighthavenLabsY10  Map = 418119057546
 	ConsulateY10       Map = 418126004176
 	FortressY10        Map = 398899676157
+	OregonY11          Map = 434715462383 // modernized in Y11S1 Operation Silent Hunt
 
 	KilledOpponents  WinCondition = "KilledOpponents"
 	SecuredArea      WinCondition = "SecuredArea" // TODO
