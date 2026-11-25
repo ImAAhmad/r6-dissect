@@ -27,4 +27,5 @@ const (
 	Y10S3_1     int = 9211553
 	Y10S4       int = 9394857
 	Y11S1       int = 9578674
+	Y11S3       int = 10030685 // Y11S3_Alpha04, Operation Split Fire
 )

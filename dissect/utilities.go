@@ -186,6 +186,8 @@ func ClassifyGadgetByOperator(operator string) string {
 		"Denari": "T.R.I.P. Connector",
 		// Year 11
 		"SolidSnake": "Soliton Radar Mk. III",
+		// Y11S3
+		"Noor": "Horus Lance Launcher",
 	}
 	if g, ok := gadgetMap[operator]; ok {
 		return g
