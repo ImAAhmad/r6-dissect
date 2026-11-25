@@ -127,6 +127,7 @@ const (
 	VillaY11           Map = 409325881472 // new IDs seen in Y11S3 replays
 	CalypsoCasino      Map = 419965653950
 	CoastlineY11       Map = 436375283234
+	OutbackY11         Map = 441825219764
 
 	KilledOpponents  WinCondition = "KilledOpponents"
 	SecuredArea      WinCondition = "SecuredArea" // TODO
